@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+backend/generated_audio/*.mp3
+backend/generated_audio/*.srt
+backend/generated_audio/previews/*.mp3
+backend/data/*.db
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.env
+.env.local
