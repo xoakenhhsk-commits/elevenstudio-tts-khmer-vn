@@ -15,8 +15,27 @@ export interface Voice {
   sample_text: string;
 }
 
+export interface UserStats {
+  total_generations: number;
+  total_chars: number;
+  total_seconds: number;
+  total_favorites: number;
+}
+
+export interface AuthUser {
+  id: string;
+  full_name: string;
+  email: string;
+  avatar_gradient: string;
+  plan: string;
+  created_at: string;
+  last_login_at: string | null;
+  stats?: UserStats;
+}
+
 export interface GenerationItem {
   id: string;
+  user_id?: string | null;
   title: string;
   text: string;
   voice_id: string;
@@ -46,5 +65,6 @@ export interface ScriptTemplate {
   text: string;
 }
 
-export type NavSection = 'tts' | 'voices' | 'history' | 'templates';
+export type AppView = 'landing' | 'studio';
+export type NavSection = 'home' | 'tts' | 'voices' | 'history' | 'templates';
 export type RightTab = 'settings' | 'history';

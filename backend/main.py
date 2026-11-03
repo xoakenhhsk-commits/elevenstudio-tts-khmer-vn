@@ -8,7 +8,7 @@ import uuid
 
 import aiofiles
 import edge_tts
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,8 +17,14 @@ from pydantic import BaseModel, Field
 from database import (
     AUDIO_DIR,
     PREVIEW_DIR,
+    authenticate_user,
+    create_session,
+    create_user,
     delete_generation,
+    delete_session,
     get_generation,
+    get_user_by_token,
+    get_user_stats,
     init_db,
     insert_generation,
     list_generations,
@@ -34,9 +40,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="AuraLabs TTS Studio API",
-    description="Modern ElevenLabs-inspired Text-to-Speech API supporting Khmer (km-KH), Vietnamese (vi-VN), and Multilingual Neural Voices.",
-    version="1.0.0",
+    title="KromaLabs AI Studio API",
+    description="Full-Stack Neural Text-to-Speech API with SQLite User Authentication, Khmer (km-KH), and Vietnamese (vi-VN) Voices.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -51,6 +57,19 @@ app.add_middleware(
 app.mount("/audio", StaticFiles(directory=str(AUDIO_DIR)), name="audio")
 
 
+# ==================== SCHEMAS ====================
+
+class RegisterRequest(BaseModel):
+    full_name: str = Field(..., min_length=2, max_length=80)
+    email: str = Field(..., min_length=5, max_length=120)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=5, max_length=120)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
 class GenerateTTSRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=15000)
     voice_id: str = Field(default="km-KH-SreymomNeural")
@@ -60,6 +79,36 @@ class GenerateTTSRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
     include_srt: bool = Field(default=True)
 
+
+# ==================== AUTH DEPENDENCIES ====================
+
+def extract_bearer_token(authorization: str | None = Header(default=None)) -> str | None:
+    if not authorization:
+        return None
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
+def get_optional_user(token: str | None = Depends(extract_bearer_token)) -> dict[str, Any] | None:
+    if not token:
+        return None
+    return get_user_by_token(token)
+
+
+def get_required_user(
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.",
+        )
+    return user
+
+
+# ==================== HELPERS ====================
 
 def format_rate(speed: float) -> str:
     pct = round((speed - 1.0) * 100)
@@ -88,10 +137,56 @@ def enrich_record(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# ==================== AUTH ENDPOINTS ====================
+
+@app.post("/api/auth/register")
+async def register_account(req: RegisterRequest) -> dict[str, Any]:
+    email_clean = req.email.strip().lower()
+    if "@" not in email_clean or "." not in email_clean.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Địa chỉ email không hợp lệ.")
+    try:
+        user = create_user(req.full_name, email_clean, req.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    token = create_session(user["id"])
+    stats = get_user_stats(user["id"])
+    return {"token": token, "user": {**user, "stats": stats}}
+
+
+@app.post("/api/auth/login")
+async def login_account(req: LoginRequest) -> dict[str, Any]:
+    user = authenticate_user(req.email, req.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.",
+        )
+    token = create_session(user["id"])
+    stats = get_user_stats(user["id"])
+    return {"token": token, "user": {**user, "stats": stats}}
+
+
+@app.post("/api/auth/logout")
+async def logout_account(token: str | None = Depends(extract_bearer_token)) -> dict[str, Any]:
+    if token:
+        delete_session(token)
+    return {"logged_out": True}
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict[str, Any] = Depends(get_required_user)) -> dict[str, Any]:
+    stats = get_user_stats(user["id"])
+    return {"user": {**user, "stats": stats}}
+
+
+# ==================== TTS & CATALOG ENDPOINTS ====================
+
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
+        "app": "KromaLabs AI",
         "engine": "Microsoft Edge Neural TTS (Free Open-Source)",
         "supported_primary": ["km-KH", "vi-VN", "en-US", "th-TH", "zh-CN"],
     }
@@ -112,7 +207,11 @@ async def get_voices(include_all: bool = False) -> dict[str, Any]:
                 continue
             locale = rv.get("Locale", "")
             gender = rv.get("Gender", "Female")
-            friendly = rv.get("FriendlyName", short_name).replace("Microsoft ", "").replace(" Online (Natural)", "")
+            friendly = (
+                rv.get("FriendlyName", short_name)
+                .replace("Microsoft ", "")
+                .replace(" Online (Natural)", "")
+            )
             extra.append(
                 {
                     "id": short_name,
@@ -128,7 +227,7 @@ async def get_voices(include_all: bool = False) -> dict[str, Any]:
                     "tags": [locale, gender],
                     "gradient": "from-slate-500 via-zinc-600 to-neutral-700",
                     "featured": False,
-                    "sample_text": "Hello! This is a neural voice preview.",
+                    "sample_text": "Hello! Welcome to KromaLabs neural speech synthesis.",
                 }
             )
         return {"voices": FEATURED_VOICES + extra}
@@ -151,13 +250,15 @@ async def preview_voice(voice_id: str) -> dict[str, Any]:
         sample_text = (
             voice_meta["sample_text"]
             if voice_meta
-            else "Hello! Welcome to AuraLabs neural speech synthesis studio."
+            else "Hello! Welcome to KromaLabs neural speech synthesis studio."
         )
         try:
             communicate = edge_tts.Communicate(text=sample_text, voice=voice_id)
             await communicate.save(str(preview_file))
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Không thể tạo âm thanh nghe thử: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"Không thể tạo âm thanh nghe thử: {exc}"
+            ) from exc
 
     return {
         "voice_id": voice_id,
@@ -166,14 +267,28 @@ async def preview_voice(voice_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/tts/generate")
-async def generate_tts(req: GenerateTTSRequest) -> dict[str, Any]:
+async def generate_tts(
+    req: GenerateTTSRequest,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
     clean_text = req.text.strip()
     if not clean_text:
-        raise HTTPException(status_code=400, detail="Vui lòng nhập nội dung văn bản cần chuyển thành giọng nói.")
+        raise HTTPException(
+            status_code=400,
+            detail="Vui lòng nhập nội dung văn bản cần chuyển thành giọng nói.",
+        )
 
     voice_meta = get_voice_by_id(req.voice_id)
-    voice_name = voice_meta["name"] if voice_meta else req.voice_id.split("-")[-1].replace("Neural", "")
-    language = voice_meta["language"] if voice_meta else "-".join(req.voice_id.split("-")[:2])
+    voice_name = (
+        voice_meta["name"]
+        if voice_meta
+        else req.voice_id.split("-")[-1].replace("Neural", "")
+    )
+    language = (
+        voice_meta["language"]
+        if voice_meta
+        else "-".join(req.voice_id.split("-")[:2])
+    )
     gender = voice_meta["gender"] if voice_meta else "Female"
 
     gen_id = uuid.uuid4().hex[:12]
@@ -213,19 +328,27 @@ async def generate_tts(req: GenerateTTSRequest) -> dict[str, Any]:
     except Exception as exc:
         if audio_path.exists():
             audio_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Lỗi khi tổng hợp giọng nói: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Lỗi khi tổng hợp giọng nói: {exc}"
+        ) from exc
 
     file_size = audio_path.stat().st_size if audio_path.exists() else 0
     if file_size == 0:
         audio_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail="Không nhận được dữ liệu âm thanh từ engine TTS.")
+        raise HTTPException(
+            status_code=500, detail="Không nhận được dữ liệu âm thanh từ engine TTS."
+        )
 
-    # Estimate MP3 duration (~24kbps mono 24kHz typical for Edge Neural = ~6000 bytes/sec)
     duration_est = round(max(1.0, file_size / 6000.0), 1)
 
     record = {
         "id": gen_id,
-        "title": (req.title.strip() if req.title and req.title.strip() else make_auto_title(clean_text, voice_name)),
+        "user_id": user["id"] if user else None,
+        "title": (
+            req.title.strip()
+            if req.title and req.title.strip()
+            else make_auto_title(clean_text, voice_name)
+        ),
         "text": clean_text,
         "voice_id": req.voice_id,
         "voice_name": voice_name,
@@ -248,22 +371,32 @@ async def generate_tts(req: GenerateTTSRequest) -> dict[str, Any]:
 
 
 @app.get("/api/history")
-async def get_history() -> dict[str, Any]:
-    items = list_generations(limit=100)
+async def get_history(
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    if not user:
+        return {"items": []}
+    items = list_generations(user_id=user["id"], limit=100)
     return {"items": [enrich_record(i) for i in items]}
 
 
 @app.patch("/api/history/{item_id}/favorite")
-async def favorite_history_item(item_id: str) -> dict[str, Any]:
-    updated = toggle_favorite(item_id)
+async def favorite_history_item(
+    item_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    updated = toggle_favorite(item_id, user_id=user["id"] if user else None)
     if not updated:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi âm.")
     return enrich_record(updated)
 
 
 @app.delete("/api/history/{item_id}")
-async def remove_history_item(item_id: str) -> dict[str, Any]:
-    deleted = delete_generation(item_id)
+async def remove_history_item(
+    item_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    deleted = delete_generation(item_id, user_id=user["id"] if user else None)
     if not deleted:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi âm.")
 

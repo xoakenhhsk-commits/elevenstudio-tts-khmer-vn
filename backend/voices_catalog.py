@@ -79,7 +79,7 @@ FEATURED_VOICES: list[dict[str, Any]] = [
         "tags": ["Multilingual", "English", "Narration"],
         "gradient": "from-pink-500 via-rose-500 to-orange-400",
         "featured": False,
-        "sample_text": "Hello! Welcome to AuraLabs Studio. Create lifelike speech in Khmer, Vietnamese, and English effortlessly.",
+        "sample_text": "Hello! Welcome to KromaLabs Studio. Create lifelike speech in Khmer, Vietnamese, and English effortlessly.",
     },
     {
         "id": "en-US-AndrewMultilingualNeural",
@@ -180,3 +180,4 @@ def get_voice_by_id(voice_id: str) -> dict[str, Any] | None:
         if voice["id"] == voice_id:
             return voice
     return None
+

@@ -1,40 +1,35 @@
-# 🎙️ ElevenStudio AI — Full-Stack Text-to-Speech (Khmer 🇰🇭 & Tiếng Việt 🇻🇳)
+# 🎙️ KromaLabs AI — Full-Stack Voice Studio (Khmer 🇰🇭 & Tiếng Việt 🇻🇳)
 
-Ứng dụng Web **Text-to-Speech (TTS) Full-Stack** với thiết kế **UI/UX hiện đại lấy cảm hứng từ ElevenLabs Studio**, sử dụng thư viện mã nguồn mở miễn phí `edge-tts` trên GitHub (**không cần API Key, không giới hạn ký tự tháng**).
+**KromaLabs** là nền tảng Web **Text-to-Speech (TTS) Full-Stack** với thiết kế **UI/UX hiện đại phong cách ElevenLabs** (bao gồm **Trang chủ Landing Page tương tác trực tiếp**, **Studio Dashboard**, chuyển đổi **Giao diện Sáng / Tối**, bộ font `Plus Jakarta Sans` + `Noto Sans Khmer` sắc nét và **hệ thống Đăng ký / Đăng nhập User thật lưu trữ SQLite**).
+
+---
 
 ## ✨ Tính năng nổi bật
 
-- **🇰🇭 Giọng đọc Tiếng Khmer (Campuchia) chuẩn Neural**:
-  - **Sreymom (`km-KH-SreymomNeural`)** — Giọng nữ tự nhiên, trong trẻo, chuẩn Phnom Penh.
-  - **Piseth (`km-KH-PisethNeural`)** — Giọng nam trầm ấm, đĩnh đạc cho tin tức & review phim.
-- **🇻🇳 Giọng đọc Tiếng Việt truyền cảm**:
-  - **Hoài My (`vi-VN-HoaiMyNeural`)** — Giọng nữ mượt mà, quảng cáo, TikTok, sách nói.
-  - **Nam Minh (`vi-VN-NamMinhNeural`)** — Giọng nam chuyên nghiệp, podcast, thuyết minh.
-- **🌐 Mở rộng 300+ giọng Quốc tế**: Tiếng Anh (Multilingual v2), Thái, Trung, Nhật, Hàn...
-- **🎛️ Giao diện ElevenLabs Studio hiện đại**:
-  - Chế độ **Dark / Light Mode** mượt mà.
-  - Tinh chỉnh **Tốc độ đọc (`0.5x` – `2.0x`)**, **Cao độ (`Pitch Hz`)**, **Âm lượng (`Volume %`)**.
-  - **Tự động xuất phụ đề `.SRT`** căn chuẩn thời gian cho CapCut / Premiere.
-  - **Audio Player Bar** dưới đáy với thanh tua, đổi tốc độ nghe, tải nhanh `.MP3` & `.SRT`.
-  - **Lưu trữ Lịch sử SQLite** bền vững + Kho mẫu kịch bản Khmer/Việt dựng sẵn.
+- **🏠 Trang chủ Home tương tác chuẩn ElevenLabs**:
+  - Live Voice Playground ngay trên trang chủ (chọn mẫu Kể chuyện, Quảng cáo TikTok, Review Phim bằng tiếng Khmer & tiếng Việt và bấm nghe ngay).
+  - Bảng tổng quan **Trang chủ Studio** hiển thị thống kê ký tự, số bản thu và giọng đọc nổi bật.
+- **🔐 Đăng ký / Đăng nhập / Đăng xuất User thật (SQLite Database)**:
+  - Lưu trữ bảng `users`, `sessions`, `generations` trong `backend/data/kromalabs.db`.
+  - Mật khẩu băm bảo mật chuẩn `PBKDF2-HMAC-SHA256` kèm salt ngẫu nhiên.
+  - Tự động đồng bộ lịch sử file `.MP3` và phụ đề `.SRT` riêng biệt cho từng tài khoản.
+- **🎨 Thương hiệu mới & Giao diện Sáng / Tối**:
+  - Logo hình học âm học độc quyền **KromaLabs** (`BrandLogo.tsx` & `favicon.svg`).
+  - Hỗ trợ chuyển đổi mượt mà **Giao diện Sáng (Light Mode)** & **Giao diện Tối (Dark Mode)**.
+- **🇰🇭 Giọng đọc Tiếng Khmer & 🇻🇳 Tiếng Việt miễn phí 100%**:
+  - **Khmer (`km-KH`)**: `Sreymom` (Nữ) & `Piseth` (Nam).
+  - **Tiếng Việt (`vi-VN`)**: `Hoài My` (Nữ) & `Nam Minh` (Nam) + mở rộng hơn 300 giọng quốc tế.
 
 ---
 
-## 🛠️ Công nghệ sử dụng (Tech Stack)
-
-- **Frontend**: React 19 + TypeScript + Vite + Tailwind CSS v4 + Lucide Icons + Google Fonts (`Inter` & `Noto Sans Khmer`).
-- **Backend**: Python FastAPI + `edge-tts` (Free Open-Source Neural TTS) + SQLite + `aiofiles`.
-
----
-
-## 🚀 Hướng dẫn cài đặt & chạy nhanh
+## 🚀 Hướng dẫn chạy nhanh
 
 ### Cách 1: Chạy 1-click trên Windows
-Nhấp đúp vào file [`start-dev.bat`](./start-dev.bat) ở thư mục gốc.
+Nhấp đúp vào file [`start-dev.bat`](./start-dev.bat).
 
 ### Cách 2: Chạy thủ công qua Terminal
 
-**1. Khởi chạy Backend (Cổng `8000`):**
+**1. Backend (Cổng `8000`):**
 ```bash
 cd backend
 python -m venv .venv
@@ -43,11 +38,11 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-**2. Khởi chạy Frontend (Cổng `5173`):**
+**2. Frontend (Cổng `5173`):**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Mở trình duyệt tại: **http://localhost:5173**
+Mở trình duyệt tại: **http://127.0.0.1:5173**
