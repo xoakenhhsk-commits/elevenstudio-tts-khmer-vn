@@ -2,6 +2,56 @@ import type { AuthUser, GenerationItem, ScriptTemplate, Voice } from './types';
 
 const TOKEN_STORAGE_KEY = 'kromalabs_auth_token';
 
+// Smart backend URL resolution: works via Vite proxy (/api), direct FastAPI (:8000), or fallback direct URL
+let resolvedBaseUrl = '';
+
+const FALLBACK_CANDIDATES = ['', 'http://127.0.0.1:8000', 'http://localhost:8000'];
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const candidates = resolvedBaseUrl
+    ? [resolvedBaseUrl, ...FALLBACK_CANDIDATES.filter((c) => c !== resolvedBaseUrl)]
+    : FALLBACK_CANDIDATES;
+
+  let lastError: unknown = null;
+
+  for (const base of candidates) {
+    try {
+      const res = await fetch(`${base}${path}`, init);
+      // Vite proxy returns 500/502/504 with empty/text error when backend port 8000 is down
+      if (base === '' && (res.status === 502 || res.status === 504)) {
+        continue;
+      }
+      resolvedBaseUrl = base;
+      return res;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (lastError instanceof TypeError) {
+    throw new Error(
+      'Không thể kết nối máy chủ Backend (cổng 8000). Vui lòng đảm bảo Backend đang chạy!'
+    );
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Lỗi kết nối tới máy chủ KromaLabs API');
+}
+
+export function resolveMediaUrl(url: string | null | undefined): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return `${resolvedBaseUrl}${url}`;
+}
+
+function normalizeGeneration(item: GenerationItem): GenerationItem {
+  return {
+    ...item,
+    audio_url: resolveMediaUrl(item.audio_url),
+    srt_url: item.srt_url ? resolveMediaUrl(item.srt_url) : null,
+  };
+}
+
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_STORAGE_KEY);
 }
@@ -35,7 +85,7 @@ export async function registerUser(
   email: string,
   password: string
 ): Promise<AuthResponse> {
-  const res = await fetch('/api/auth/register', {
+  const res = await apiFetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ full_name, email, password }),
@@ -49,7 +99,7 @@ export async function registerUser(
 }
 
 export async function loginUser(email: string, password: string): Promise<AuthResponse> {
-  const res = await fetch('/api/auth/login', {
+  const res = await apiFetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -64,7 +114,7 @@ export async function loginUser(email: string, password: string): Promise<AuthRe
 
 export async function logoutUser(): Promise<void> {
   try {
-    await fetch('/api/auth/logout', {
+    await apiFetch('/api/auth/logout', {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -76,40 +126,44 @@ export async function logoutUser(): Promise<void> {
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const token = getStoredToken();
   if (!token) return null;
-  const res = await fetch('/api/auth/me', {
-    headers: authHeaders(),
-  });
-  if (!res.ok) {
-    setStoredToken(null);
+  try {
+    const res = await apiFetch('/api/auth/me', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      setStoredToken(null);
+      return null;
+    }
+    const data = await res.json();
+    return data.user;
+  } catch {
     return null;
   }
-  const data = await res.json();
-  return data.user;
 }
 
 // ==================== TTS & CATALOG API ====================
 
 export async function fetchVoices(includeAll = false): Promise<Voice[]> {
-  const res = await fetch(`/api/voices?include_all=${includeAll}`);
+  const res = await apiFetch(`/api/voices?include_all=${includeAll}`);
   if (!res.ok) throw new Error('Không thể tải danh sách giọng đọc');
   const data = await res.json();
   return data.voices;
 }
 
 export async function fetchTemplates(): Promise<ScriptTemplate[]> {
-  const res = await fetch('/api/templates');
+  const res = await apiFetch('/api/templates');
   if (!res.ok) throw new Error('Không thể tải mẫu kịch bản');
   const data = await res.json();
   return data.templates;
 }
 
 export async function fetchHistory(): Promise<GenerationItem[]> {
-  const res = await fetch('/api/history', {
+  const res = await apiFetch('/api/history', {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Không thể tải lịch sử giọng nói');
   const data = await res.json();
-  return data.items;
+  return (data.items || []).map(normalizeGeneration);
 }
 
 export interface GeneratePayload {
@@ -123,7 +177,7 @@ export interface GeneratePayload {
 }
 
 export async function generateSpeech(payload: GeneratePayload): Promise<GenerationItem> {
-  const res = await fetch('/api/tts/generate', {
+  const res = await apiFetch('/api/tts/generate', {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -132,11 +186,12 @@ export async function generateSpeech(payload: GeneratePayload): Promise<Generati
     const err = await res.json().catch(() => ({ detail: 'Lỗi kết nối máy chủ TTS' }));
     throw new Error(err.detail || 'Lỗi khi tạo giọng nói');
   }
-  return res.json();
+  const item: GenerationItem = await res.json();
+  return normalizeGeneration(item);
 }
 
 export async function previewVoice(voiceId: string): Promise<string> {
-  const res = await fetch(`/api/voices/${encodeURIComponent(voiceId)}/preview`, {
+  const res = await apiFetch(`/api/voices/${encodeURIComponent(voiceId)}/preview`, {
     method: 'POST',
   });
   if (!res.ok) {
@@ -144,20 +199,21 @@ export async function previewVoice(voiceId: string): Promise<string> {
     throw new Error(err.detail || 'Không thể phát mẫu thử');
   }
   const data = await res.json();
-  return data.preview_url;
+  return resolveMediaUrl(data.preview_url);
 }
 
 export async function toggleFavoriteItem(id: string): Promise<GenerationItem> {
-  const res = await fetch(`/api/history/${id}/favorite`, {
+  const res = await apiFetch(`/api/history/${id}/favorite`, {
     method: 'PATCH',
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Không thể cập nhật mục yêu thích');
-  return res.json();
+  const item: GenerationItem = await res.json();
+  return normalizeGeneration(item);
 }
 
 export async function deleteHistoryItem(id: string): Promise<void> {
-  const res = await fetch(`/api/history/${id}`, {
+  const res = await apiFetch(`/api/history/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
@@ -165,5 +221,5 @@ export async function deleteHistoryItem(id: string): Promise<void> {
 }
 
 export function getDownloadUrl(id: string, type: 'mp3' | 'srt'): string {
-  return `/api/download/${id}/${type}`;
+  return resolveMediaUrl(`/api/download/${id}/${type}`);
 }

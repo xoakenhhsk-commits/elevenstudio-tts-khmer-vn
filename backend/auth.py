@@ -32,3 +32,4 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 def generate_session_token() -> str:
     return secrets.token_urlsafe(36)
+
