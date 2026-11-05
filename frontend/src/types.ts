@@ -12,6 +12,7 @@ export interface Voice {
   tags: string[];
   gradient: string;
   featured: boolean;
+  engine?: string;
   sample_text: string;
 }
 
@@ -31,6 +32,7 @@ export interface AuthUser {
   created_at: string;
   last_login_at: string | null;
   stats?: UserStats;
+  api_keys?: Record<string, string>;
 }
 
 export interface GenerationItem {

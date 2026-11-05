@@ -22,15 +22,21 @@ from database import (
     create_user,
     delete_generation,
     delete_session,
+    get_api_key,
     get_generation,
     get_user_by_token,
     get_user_stats,
     init_db,
     insert_generation,
     list_generations,
+    list_user_api_keys,
+    save_user_api_key,
     toggle_favorite,
 )
 from voices_catalog import FEATURED_VOICES, SCRIPT_TEMPLATES, get_voice_by_id
+from gtts import gTTS
+import requests
+import asyncio
 
 
 @asynccontextmanager
@@ -78,6 +84,12 @@ class GenerateTTSRequest(BaseModel):
     volume: int = Field(default=0, ge=-50, le=50)
     title: str | None = Field(default=None, max_length=120)
     include_srt: bool = Field(default=True)
+    custom_api_key: str | None = Field(default=None, max_length=200)
+
+
+class SaveApiKeyRequest(BaseModel):
+    provider: str = Field(..., min_length=2, max_length=30)
+    api_key: str = Field(..., min_length=1, max_length=200)
 
 
 # ==================== AUTH DEPENDENCIES ====================
@@ -177,7 +189,18 @@ async def logout_account(token: str | None = Depends(extract_bearer_token)) -> d
 @app.get("/api/auth/me")
 async def get_me(user: dict[str, Any] = Depends(get_required_user)) -> dict[str, Any]:
     stats = get_user_stats(user["id"])
-    return {"user": {**user, "stats": stats}}
+    keys = list_user_api_keys(user["id"])
+    return {"user": {**user, "stats": stats, "api_keys": keys}}
+
+
+@app.post("/api/auth/api-keys")
+async def save_api_key_endpoint(
+    req: SaveApiKeyRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    save_user_api_key(user["id"], req.provider, req.api_key)
+    keys = list_user_api_keys(user["id"])
+    return {"status": "ok", "provider": req.provider, "api_keys": keys}
 
 
 # ==================== TTS & CATALOG ENDPOINTS ====================
@@ -241,7 +264,10 @@ async def get_templates() -> dict[str, Any]:
 
 
 @app.post("/api/voices/{voice_id}/preview")
-async def preview_voice(voice_id: str) -> dict[str, Any]:
+async def preview_voice(
+    voice_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", voice_id)
     preview_file = PREVIEW_DIR / f"{safe_name}.mp3"
 
@@ -252,13 +278,94 @@ async def preview_voice(voice_id: str) -> dict[str, Any]:
             if voice_meta
             else "Hello! Welcome to KromaLabs neural speech synthesis studio."
         )
-        try:
-            communicate = edge_tts.Communicate(text=sample_text, voice=voice_id)
-            await communicate.save(str(preview_file))
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Không thể tạo âm thanh nghe thử: {exc}"
-            ) from exc
+        engine = voice_meta.get("engine", "edge") if voice_meta else "edge"
+
+        if engine == "gtts":
+            def _gen_gtts():
+                tts = gTTS(text=sample_text, lang="vi")
+                tts.save(str(preview_file))
+            await asyncio.to_thread(_gen_gtts)
+        elif engine == "fpt":
+            fpt_key = get_api_key("fpt", user_id=user["id"] if user else None)
+            if not fpt_key:
+                # Fallback to high quality edge neural if no FPT key provided
+                fallback_voice = "vi-VN-HoaiMyNeural"
+                communicate = edge_tts.Communicate(text=sample_text, voice=fallback_voice)
+                await communicate.save(str(preview_file))
+            else:
+                voice_code = voice_meta.get("voice_code", "banmai")
+                def _call_fpt():
+                    res = requests.post(
+                        "https://api.fpt.ai/hmi/tts/v5",
+                        headers={"api_key": fpt_key, "voice": voice_code},
+                        data=sample_text.encode("utf-8"),
+                        timeout=15,
+                    )
+                    data = res.json()
+                    async_url = data.get("async")
+                    if async_url:
+                        # Polling audio file from FPT
+                        for _ in range(10):
+                            import time
+                            time.sleep(1)
+                            ar = requests.get(async_url, timeout=10)
+                            if ar.status_code == 200:
+                                with open(str(preview_file), "wb") as f:
+                                    f.write(ar.content)
+                                return
+                    raise Exception(data.get("message", "FPT API error"))
+                try:
+                    await asyncio.to_thread(_call_fpt)
+                except Exception:
+                    # Graceful fallback to Hoai My
+                    communicate = edge_tts.Communicate(text=sample_text, voice="vi-VN-HoaiMyNeural")
+                    await communicate.save(str(preview_file))
+        elif engine == "zalo":
+            zalo_key = get_api_key("zalo", user_id=user["id"] if user else None)
+            if not zalo_key:
+                fallback_voice = "vi-VN-HoaiMyNeural" if voice_meta.get("gender") == "Female" else "vi-VN-NamMinhNeural"
+                communicate = edge_tts.Communicate(text=sample_text, voice=fallback_voice)
+                await communicate.save(str(preview_file))
+            else:
+                speaker_id = voice_meta.get("speaker_id", "1")
+                def _call_zalo():
+                    res = requests.post(
+                        "https://api.zalo.ai/v1/tts/synthesize",
+                        headers={"apikey": zalo_key},
+                        data={"input": sample_text, "speaker_id": speaker_id, "encode_type": "1"},
+                        timeout=15,
+                    )
+                    data = res.json()
+                    if data.get("error_code") == 0:
+                        audio_url = data.get("data", {}).get("url")
+                        ar = requests.get(audio_url, timeout=10)
+                        with open(str(preview_file), "wb") as f:
+                            f.write(ar.content)
+                        return
+                    raise Exception(data.get("error_message", "Zalo API error"))
+                try:
+                    await asyncio.to_thread(_call_zalo)
+                except Exception:
+                    fallback_voice = "vi-VN-HoaiMyNeural" if voice_meta.get("gender") == "Female" else "vi-VN-NamMinhNeural"
+                    communicate = edge_tts.Communicate(text=sample_text, voice=fallback_voice)
+                    await communicate.save(str(preview_file))
+        else:
+            # Default Edge TTS
+            last_exc: Exception | None = None
+            for _ in range(3):
+                try:
+                    communicate = edge_tts.Communicate(text=sample_text, voice=voice_id)
+                    await communicate.save(str(preview_file))
+                    if preview_file.exists() and preview_file.stat().st_size > 0:
+                        last_exc = None
+                        break
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                preview_file.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=500, detail=f"Không thể tạo âm thanh nghe thử: {last_exc}"
+                ) from last_exc
 
     return {
         "voice_id": voice_id,
@@ -290,6 +397,7 @@ async def generate_tts(
         else "-".join(req.voice_id.split("-")[:2])
     )
     gender = voice_meta["gender"] if voice_meta else "Female"
+    engine = voice_meta.get("engine", "edge") if voice_meta else "edge"
 
     gen_id = uuid.uuid4().hex[:12]
     audio_filename = f"tts_{gen_id}.mp3"
@@ -305,26 +413,125 @@ async def generate_tts(
     submaker = edge_tts.SubMaker()
 
     try:
-        communicate = edge_tts.Communicate(
-            text=clean_text,
-            voice=req.voice_id,
-            rate=rate_str,
-            pitch=pitch_str,
-            volume=volume_str,
-            boundary="SentenceBoundary",
-        )
-        async with aiofiles.open(audio_path, "wb") as audio_f:
-            async for chunk in communicate.stream():
-                chunk_type = chunk.get("type")
-                if chunk_type == "audio":
-                    await audio_f.write(chunk["data"])
-                elif chunk_type in ("WordBoundary", "SentenceBoundary") and req.include_srt:
-                    submaker.feed(chunk)
+        if engine == "gtts":
+            def _synth_gtts():
+                tts = gTTS(text=clean_text, lang="vi", slow=(req.speed < 0.85))
+                tts.save(str(audio_path))
+            await asyncio.to_thread(_synth_gtts)
+            # Create a simple sentence-level SRT for gTTS
+            if srt_path and req.include_srt:
+                async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                    await srt_f.write(f"1\n00:00:00,000 --> 00:00:10,000\n{clean_text}\n")
+        elif engine == "fpt":
+            fpt_key = req.custom_api_key or get_api_key("fpt", user_id=user["id"] if user else None)
+            if not fpt_key:
+                # Automatically fallback to Hoai My Neural with natural studio voice
+                communicate = edge_tts.Communicate(
+                    text=clean_text,
+                    voice="vi-VN-HoaiMyNeural",
+                    rate=rate_str,
+                    pitch=pitch_str,
+                    volume=volume_str,
+                    boundary="SentenceBoundary",
+                )
+                async with aiofiles.open(audio_path, "wb") as audio_f:
+                    async for chunk in communicate.stream():
+                        if chunk.get("type") == "audio":
+                            await audio_f.write(chunk["data"])
+                        elif chunk.get("type") in ("WordBoundary", "SentenceBoundary") and req.include_srt:
+                            submaker.feed(chunk)
+                if srt_path and req.include_srt:
+                    async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                        await srt_f.write(submaker.get_srt() or "")
+            else:
+                voice_code = voice_meta.get("voice_code", "banmai")
+                def _call_fpt():
+                    res = requests.post(
+                        "https://api.fpt.ai/hmi/tts/v5",
+                        headers={"api_key": fpt_key, "voice": voice_code},
+                        data=clean_text.encode("utf-8"),
+                        timeout=30,
+                    )
+                    data = res.json()
+                    async_url = data.get("async")
+                    if async_url:
+                        for _ in range(25):
+                            import time
+                            time.sleep(1)
+                            ar = requests.get(async_url, timeout=10)
+                            if ar.status_code == 200:
+                                with open(str(audio_path), "wb") as f:
+                                    f.write(ar.content)
+                                return
+                    raise Exception(data.get("message", "FPT API error"))
+                await asyncio.to_thread(_call_fpt)
+                if srt_path and req.include_srt:
+                    async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                        await srt_f.write(f"1\n00:00:00,000 --> 00:00:15,000\n{clean_text}\n")
+        elif engine == "zalo":
+            zalo_key = req.custom_api_key or get_api_key("zalo", user_id=user["id"] if user else None)
+            if not zalo_key:
+                fallback_voice = "vi-VN-HoaiMyNeural" if gender == "Female" else "vi-VN-NamMinhNeural"
+                communicate = edge_tts.Communicate(
+                    text=clean_text,
+                    voice=fallback_voice,
+                    rate=rate_str,
+                    pitch=pitch_str,
+                    volume=volume_str,
+                    boundary="SentenceBoundary",
+                )
+                async with aiofiles.open(audio_path, "wb") as audio_f:
+                    async for chunk in communicate.stream():
+                        if chunk.get("type") == "audio":
+                            await audio_f.write(chunk["data"])
+                        elif chunk.get("type") in ("WordBoundary", "SentenceBoundary") and req.include_srt:
+                            submaker.feed(chunk)
+                if srt_path and req.include_srt:
+                    async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                        await srt_f.write(submaker.get_srt() or "")
+            else:
+                speaker_id = voice_meta.get("speaker_id", "1")
+                def _call_zalo():
+                    res = requests.post(
+                        "https://api.zalo.ai/v1/tts/synthesize",
+                        headers={"apikey": zalo_key},
+                        data={"input": clean_text, "speaker_id": speaker_id, "encode_type": "1"},
+                        timeout=30,
+                    )
+                    data = res.json()
+                    if data.get("error_code") == 0:
+                        audio_url = data.get("data", {}).get("url")
+                        ar = requests.get(audio_url, timeout=15)
+                        with open(str(audio_path), "wb") as f:
+                            f.write(ar.content)
+                        return
+                    raise Exception(data.get("error_message", "Zalo API error"))
+                await asyncio.to_thread(_call_zalo)
+                if srt_path and req.include_srt:
+                    async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                        await srt_f.write(f"1\n00:00:00,000 --> 00:00:15,000\n{clean_text}\n")
+        else:
+            # Default Edge TTS Neural
+            communicate = edge_tts.Communicate(
+                text=clean_text,
+                voice=req.voice_id,
+                rate=rate_str,
+                pitch=pitch_str,
+                volume=volume_str,
+                boundary="SentenceBoundary",
+            )
+            async with aiofiles.open(audio_path, "wb") as audio_f:
+                async for chunk in communicate.stream():
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "audio":
+                        await audio_f.write(chunk["data"])
+                    elif chunk_type in ("WordBoundary", "SentenceBoundary") and req.include_srt:
+                        submaker.feed(chunk)
 
-        if srt_path and req.include_srt:
-            srt_content = submaker.get_srt()
-            async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
-                await srt_f.write(srt_content or "")
+            if srt_path and req.include_srt:
+                srt_content = submaker.get_srt()
+                async with aiofiles.open(srt_path, "w", encoding="utf-8") as srt_f:
+                    await srt_f.write(srt_content or "")
     except Exception as exc:
         if audio_path.exists():
             audio_path.unlink(missing_ok=True)

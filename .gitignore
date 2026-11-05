@@ -9,6 +9,10 @@ backend/generated_audio/*.mp3
 backend/generated_audio/*.srt
 backend/generated_audio/previews/*.mp3
 backend/data/*.db
+backend/models/
+*.onnx
+*.wav
+*.tar.bz2
 
 # Node
 node_modules/

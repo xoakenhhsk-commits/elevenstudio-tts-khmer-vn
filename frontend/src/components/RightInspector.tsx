@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   Download,
+  KeyRound,
   Loader2,
   Play,
   RotateCcw,
@@ -9,8 +10,9 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import { getDownloadUrl } from '../api';
-import type { GenerationItem, RightTab, Voice } from '../types';
+import { useState } from 'react';
+import { getDownloadUrl, saveUserApiKey } from '../api';
+import type { AuthUser, GenerationItem, RightTab, Voice } from '../types';
 
 interface RightInspectorProps {
   activeTab: RightTab;
@@ -33,6 +35,8 @@ interface RightInspectorProps {
   onPlayTrack: (item: GenerationItem) => void;
   onToggleFavorite: (id: string) => void;
   onDeleteItem: (id: string) => void;
+  user: AuthUser | null;
+  onUpdateUser: (u: AuthUser) => void;
   darkMode: boolean;
 }
 
@@ -57,8 +61,34 @@ export function RightInspector({
   onPlayTrack,
   onToggleFavorite,
   onDeleteItem,
+  user,
+  onUpdateUser,
   darkMode,
 }: RightInspectorProps) {
+  const [fptKeyInput, setFptKeyInput] = useState('');
+  const [zaloKeyInput, setZaloKeyInput] = useState('');
+  const [savingKey, setSavingKey] = useState(false);
+  const [keyNotice, setKeyNotice] = useState<string | null>(null);
+
+  const handleSaveKey = async (provider: 'fpt' | 'zalo') => {
+    const val = provider === 'fpt' ? fptKeyInput.trim() : zaloKeyInput.trim();
+    if (!val) return;
+    try {
+      setSavingKey(true);
+      const updatedKeys = await saveUserApiKey(provider, val);
+      if (user) {
+        onUpdateUser({ ...user, api_keys: updatedKeys });
+      }
+      setKeyNotice(`Đã lưu API Key ${provider.toUpperCase()} thành công!`);
+      setTimeout(() => setKeyNotice(null), 3000);
+      if (provider === 'fpt') setFptKeyInput('');
+      if (provider === 'zalo') setZaloKeyInput('');
+    } catch {
+      setKeyNotice('Lỗi: Hãy đăng nhập để lưu API Key vào tài khoản.');
+    } finally {
+      setSavingKey(false);
+    }
+  };
   return (
     <aside
       className={`w-88 shrink-0 border-l flex flex-col overflow-hidden transition-colors ${
@@ -188,6 +218,85 @@ export function RightInspector({
                   }`}
                 >
                   Đổi giọng khác
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Connect Cloud API Keys (FPT & Zalo) */}
+          <div
+            className={`p-3.5 rounded-2xl border ${
+              darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
+            }`}
+          >
+            <div className="flex items-center gap-2 mb-1.5">
+              <KeyRound className="w-4 h-4 text-amber-500" />
+              <span className="text-xs font-semibold">Tích hợp API Key (FPT.AI & Zalo AI)</span>
+            </div>
+            <p className={`text-[11px] mb-3 leading-relaxed ${darkMode ? 'text-zinc-400' : 'text-zinc-500'}`}>
+              Mở khóa thêm các giọng nói tiếng Việt chuyên biệt (Ban Mai, Lê Minh, Zalo Nữ/Nam) bằng API Key miễn phí của bạn.
+            </p>
+
+            {keyNotice && (
+              <div className="mb-2.5 p-2 rounded-xl bg-emerald-500/10 text-emerald-500 text-[11px] font-medium">
+                {keyNotice}
+              </div>
+            )}
+
+            {/* FPT API Key input */}
+            <div className="space-y-1.5 mb-2.5">
+              <div className="flex justify-between text-[11px]">
+                <span className="font-medium">FPT.AI Key:</span>
+                <span className="text-zinc-400 font-mono">
+                  {user?.api_keys?.fpt || 'Dùng mặc định'}
+                </span>
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="password"
+                  placeholder="Dán FPT api_key..."
+                  value={fptKeyInput}
+                  onChange={(e) => setFptKeyInput(e.target.value)}
+                  className={`flex-1 px-2.5 py-1 rounded-lg text-xs border outline-none ${
+                    darkMode ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-zinc-300 text-zinc-900'
+                  }`}
+                />
+                <button
+                  type="button"
+                  disabled={savingKey || !fptKeyInput.trim()}
+                  onClick={() => handleSaveKey('fpt')}
+                  className="px-2.5 py-1 bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 text-xs font-semibold rounded-lg disabled:opacity-50 cursor-pointer"
+                >
+                  Lưu
+                </button>
+              </div>
+            </div>
+
+            {/* Zalo API Key input */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[11px]">
+                <span className="font-medium">Zalo AI Key:</span>
+                <span className="text-zinc-400 font-mono">
+                  {user?.api_keys?.zalo || 'Dùng mặc định'}
+                </span>
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="password"
+                  placeholder="Dán Zalo apikey..."
+                  value={zaloKeyInput}
+                  onChange={(e) => setZaloKeyInput(e.target.value)}
+                  className={`flex-1 px-2.5 py-1 rounded-lg text-xs border outline-none ${
+                    darkMode ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-zinc-300 text-zinc-900'
+                  }`}
+                />
+                <button
+                  type="button"
+                  disabled={savingKey || !zaloKeyInput.trim()}
+                  onClick={() => handleSaveKey('zalo')}
+                  className="px-2.5 py-1 bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 text-xs font-semibold rounded-lg disabled:opacity-50 cursor-pointer"
+                >
+                  Lưu
                 </button>
               </div>
             </div>

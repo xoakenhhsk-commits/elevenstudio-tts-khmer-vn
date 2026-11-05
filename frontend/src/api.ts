@@ -141,6 +141,17 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
   }
 }
 
+export async function saveUserApiKey(provider: string, apiKey: string): Promise<Record<string, string>> {
+  const res = await apiFetch('/api/auth/api-keys', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+  if (!res.ok) throw new Error('Không thể lưu API Key');
+  const data = await res.json();
+  return data.api_keys;
+}
+
 // ==================== TTS & CATALOG API ====================
 
 export async function fetchVoices(includeAll = false): Promise<Voice[]> {

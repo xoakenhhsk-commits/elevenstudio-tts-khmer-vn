@@ -1364,6 +1364,8 @@ export function App() {
           }}
           onToggleFavorite={handleToggleFavorite}
           onDeleteItem={handleDeleteItem}
+          user={user}
+          onUpdateUser={setUser}
           darkMode={darkMode}
         />
       </div>

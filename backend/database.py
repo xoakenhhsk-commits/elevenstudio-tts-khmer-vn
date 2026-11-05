@@ -94,6 +94,98 @@ def init_db() -> None:
         if "user_id" not in cols:
             conn.execute("ALTER TABLE generations ADD COLUMN user_id TEXT")
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, provider),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS system_api_keys (
+                provider TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.commit()
+
+
+# ==================== API KEY FUNCTIONS ====================
+
+def save_user_api_key(user_id: str, provider: str, api_key: str) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_api_keys (id, user_id, provider, api_key, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, provider) DO UPDATE SET
+                api_key = excluded.api_key,
+                updated_at = excluded.updated_at
+            """,
+            (f"key_{uuid.uuid4().hex[:12]}", user_id, provider.lower().strip(), api_key.strip(), now_iso),
+        )
+        conn.commit()
+
+
+def get_api_key(provider: str, user_id: str | None = None) -> str | None:
+    provider_clean = provider.lower().strip()
+    with get_connection() as conn:
+        if user_id:
+            row = conn.execute(
+                "SELECT api_key FROM user_api_keys WHERE user_id = ? AND provider = ?",
+                (user_id, provider_clean),
+            ).fetchone()
+            if row and row["api_key"]:
+                return row["api_key"]
+
+        row = conn.execute(
+            "SELECT api_key FROM system_api_keys WHERE provider = ?",
+            (provider_clean,),
+        ).fetchone()
+        if row and row["api_key"]:
+            return row["api_key"]
+    return None
+
+
+def list_user_api_keys(user_id: str) -> dict[str, str]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT provider, api_key FROM user_api_keys WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        result: dict[str, str] = {}
+        for r in rows:
+            k = r["api_key"]
+            masked = (k[:4] + "••••••••" + k[-4:]) if len(k) > 8 else "••••••••"
+            result[r["provider"]] = masked
+        return result
+
+
+def save_system_api_key(provider: str, api_key: str) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO system_api_keys (provider, api_key, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                api_key = excluded.api_key,
+                updated_at = excluded.updated_at
+            """,
+            (provider.lower().strip(), api_key.strip(), now_iso),
+        )
         conn.commit()
 
 
