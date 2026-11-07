@@ -23,7 +23,7 @@ import {
   UserPlus,
   Users,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addManualStudentGrade,
   deleteResponseItem,
@@ -76,24 +76,39 @@ export function ResponsesAnalyticsView({
   const [addingManual, setAddingManual] = useState(false);
 
   // Gradebook filter
-  const [gradeFilter, setGradeFilter] = useState<'all' | 'missing' | 'cheated'>('all');
+  const [gradeFilter, setGradeFilter] = useState<'all' | 'roster' | 'missing' | 'cheated'>(
+    (form.student_roster?.length ?? 0) > 0 ? 'roster' : 'all'
+  );
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadAnalytics = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchFormAnalytics(form.id);
-      setAnalytics(data);
-      onResponseCountChange?.(data.total_responses);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tải thống kê');
-    } finally {
-      setLoading(false);
-    }
-  }, [form.id, onResponseCountChange]);
+  // Keep callback in ref so parent re-renders NEVER trigger an infinite fetch loop
+  const onCountChangeRef = useRef(onResponseCountChange);
+  onCountChangeRef.current = onResponseCountChange;
+
+  const loadAnalytics = useCallback(
+    async (silent = false) => {
+      if (silent) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      try {
+        const data = await fetchFormAnalytics(form.id);
+        setAnalytics(data);
+        onCountChangeRef.current?.(data.total_responses);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Không thể tải thống kê');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [form.id]
+  );
 
   useEffect(() => {
-    loadAnalytics();
+    loadAnalytics(false);
   }, [loadAnalytics]);
 
   const handleDeleteResponse = async (responseId: string) => {
@@ -101,7 +116,7 @@ export function ResponsesAnalyticsView({
     setDeletingId(responseId);
     try {
       await deleteResponseItem(form.id, responseId);
-      await loadAnalytics();
+      await loadAnalytics(true);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Không thể xóa phản hồi');
     } finally {
@@ -123,7 +138,7 @@ export function ResponsesAnalyticsView({
         teacher_note: editTeacherNote,
       });
       setEditingRespId(null);
-      await loadAnalytics();
+      await loadAnalytics(true);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Không thể lưu điểm');
     } finally {
@@ -137,7 +152,7 @@ export function ResponsesAnalyticsView({
     setAddingManual(true);
     try {
       const maxPts =
-        form.questions.reduce((acc, q) => acc + Number(q.points || 0), 0) || 10;
+        (form.questions || []).reduce((acc, q) => acc + Number(q.points || 0), 0) || 10;
       await addManualStudentGrade(form.id, {
         respondent_name: manualName.trim(),
         student_class: manualClass.trim(),
@@ -147,7 +162,7 @@ export function ResponsesAnalyticsView({
       });
       setManualName('');
       setShowAddManual(false);
-      await loadAnalytics();
+      await loadAnalytics(true);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Lỗi thêm điểm học sinh');
     } finally {
@@ -161,6 +176,12 @@ export function ResponsesAnalyticsView({
     if (val === undefined || val === null || val === '') return '—';
     if (Array.isArray(val)) return val.join(', ');
     return String(val);
+  };
+
+  const formatSafeDate = (iso?: string | null): string => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString('vi-VN');
   };
 
   if (loading) {
@@ -181,7 +202,7 @@ export function ResponsesAnalyticsView({
       >
         <p className="text-sm text-rose-500 font-medium">{error || 'Lỗi tải dữ liệu'}</p>
         <button
-          onClick={loadAnalytics}
+          onClick={() => loadAnalytics(false)}
           className="mt-4 px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 cursor-pointer"
         >
           Thử lại
@@ -337,7 +358,8 @@ export function ResponsesAnalyticsView({
           </button>
 
           <button
-            onClick={loadAnalytics}
+            onClick={() => loadAnalytics(true)}
+            disabled={refreshing}
             title="Làm mới"
             className={`p-2 rounded-xl border cursor-pointer ${
               darkMode
@@ -345,7 +367,7 @@ export function ResponsesAnalyticsView({
                 : 'border-zinc-200 hover:bg-zinc-100 text-zinc-700'
             }`}
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
 
           <a
@@ -474,6 +496,14 @@ export function ResponsesAnalyticsView({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 flex-wrap">
               {[
+                ...(rosterEntries.length > 0
+                  ? [
+                      {
+                        id: 'roster',
+                        label: `Danh sách cả lớp (${rosterEntries.length})`,
+                      },
+                    ]
+                  : []),
                 { id: 'all', label: `Tất cả bài nộp (${analytics.responses.length})` },
                 ...(rosterEntries.length > 0
                   ? [
@@ -512,8 +542,183 @@ export function ResponsesAnalyticsView({
             )}
           </div>
 
-          {/* Missing Students View */}
-          {gradeFilter === 'missing' ? (
+          {/* Full Class Roster View OR Missing Students View OR Submitted View */}
+          {gradeFilter === 'roster' ? (
+            <div className="space-y-2.5">
+              {rosterEntries.map((entry, rIdx) => {
+                const matchedResp = entry.response_id
+                  ? analytics.responses.find((x) => x.id === entry.response_id)
+                  : undefined;
+                const isEditing = matchedResp && editingRespId === matchedResp.id;
+
+                return (
+                  <div
+                    key={`${entry.student_name}-${rIdx}`}
+                    className={`p-4 rounded-3xl border transition-all ${
+                      !entry.submitted
+                        ? darkMode
+                          ? 'bg-zinc-900/60 border-zinc-800/80'
+                          : 'bg-zinc-50/70 border-zinc-200'
+                        : (entry.cheat_count || 0) > 0
+                          ? darkMode
+                            ? 'bg-rose-950/15 border-rose-800/60'
+                            : 'bg-rose-50/40 border-rose-200'
+                          : darkMode
+                            ? 'bg-zinc-900/90 border-zinc-800'
+                            : 'bg-white border-zinc-200 shadow-2xs'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-lg text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                            #{rIdx + 1}
+                          </span>
+                          <span className="font-display font-bold text-sm sm:text-base">
+                            {entry.student_name}
+                          </span>
+                          {entry.student_class && (
+                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-500">
+                              {entry.student_class}
+                            </span>
+                          )}
+                          {entry.submitted ? (
+                            (entry.cheat_count || 0) > 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-500">
+                                <ShieldAlert className="w-3 h-3" />
+                                Đã nộp ({entry.cheat_count} lần thoát App)
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-500">
+                                <Check className="w-3 h-3" /> Đã nộp bài
+                              </span>
+                            )
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-500">
+                              Chưa nộp bài
+                            </span>
+                          )}
+                        </div>
+
+                        {entry.submitted && (
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
+                            <span>Nộp lúc: {formatSafeDate(entry.submitted_at)}</span>
+                            {entry.teacher_note && (
+                              <span className="text-indigo-500 font-medium">
+                                • Ghi chú GV: {entry.teacher_note}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between sm:justify-end gap-3">
+                        {entry.submitted ? (
+                          <>
+                            <div className="text-left sm:text-right">
+                              <div className="font-display text-xl sm:text-2xl font-extrabold text-emerald-500">
+                                {entry.score_10 ?? 0}
+                                <span className="text-xs font-normal text-zinc-400"> /10đ</span>
+                              </div>
+                              <div className="text-[10px] font-mono text-zinc-400">
+                                Điểm gốc: {entry.final_score ?? 0}/{entry.max_score ?? 10}
+                              </div>
+                            </div>
+                            {matchedResp && (
+                              <button
+                                type="button"
+                                onClick={() => startEditingGrade(matchedResp)}
+                                className={`inline-flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
+                                  darkMode
+                                    ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
+                                    : 'border-zinc-200 hover:bg-zinc-100 text-zinc-800'
+                                }`}
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-indigo-500" />
+                                Sửa điểm riêng
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setManualName(entry.student_name);
+                              setManualScore('8.0');
+                              setManualNote('Chấm điểm riêng trực tiếp');
+                              setShowAddManual(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Vào điểm riêng
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {isEditing && matchedResp && (
+                      <div
+                        className={`mt-4 pt-4 border-t grid grid-cols-1 sm:grid-cols-12 gap-3 items-end ${
+                          darkMode ? 'border-zinc-800' : 'border-zinc-200'
+                        }`}
+                      >
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] font-semibold mb-1">
+                            Tổng điểm mới (trên {entry.max_score || 10})
+                          </label>
+                          <input
+                            type="number"
+                            step="0.25"
+                            value={editFinalScore}
+                            onChange={(e) => setEditFinalScore(e.target.value)}
+                            className={`w-full px-3 py-2 rounded-xl text-xs font-mono font-bold border outline-none ${
+                              darkMode
+                                ? 'bg-zinc-950 border-zinc-700 text-emerald-400'
+                                : 'bg-zinc-50 border-zinc-300 text-emerald-700'
+                            }`}
+                          />
+                        </div>
+                        <div className="sm:col-span-6">
+                          <label className="block text-[11px] font-semibold mb-1">
+                            Nhận xét riêng cho {entry.student_name}
+                          </label>
+                          <input
+                            type="text"
+                            value={editTeacherNote}
+                            onChange={(e) => setEditTeacherNote(e.target.value)}
+                            placeholder="VD: Cộng 1đ bài tự luận trình bày tốt..."
+                            className={`w-full px-3 py-2 rounded-xl text-xs border outline-none ${
+                              darkMode
+                                ? 'bg-zinc-950 border-zinc-700 text-zinc-200'
+                                : 'bg-zinc-50 border-zinc-300 text-zinc-900'
+                            }`}
+                          />
+                        </div>
+                        <div className="sm:col-span-3 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingRespId(null)}
+                            className="px-3 py-2 rounded-xl text-xs font-semibold text-zinc-500 cursor-pointer"
+                          >
+                            Hủy
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingGrade}
+                            onClick={() => handleSaveInlineGrade(matchedResp.id)}
+                            className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                          >
+                            {savingGrade ? 'Đang lưu...' : 'Lưu điểm'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : gradeFilter === 'missing' ? (
             missingRosterEntries.length === 0 ? (
               <div
                 className={`p-10 rounded-3xl border text-center ${
@@ -615,7 +820,7 @@ export function ResponsesAnalyticsView({
                           <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
                             <span className="inline-flex items-center gap-1">
                               <Calendar className="w-3 h-3" />
-                              {new Date(resp.submitted_at).toLocaleString('vi-VN')}
+                              {formatSafeDate(resp.submitted_at)}
                             </span>
                             {(resp.duration_seconds || 0) > 0 && (
                               <span className="inline-flex items-center gap-1 font-mono">
@@ -939,9 +1144,9 @@ export function ResponsesAnalyticsView({
                         <span className="text-emerald-500">0</span>
                       )}
                     </td>
-                    {form.questions.map((q) => (
+                    {(form.questions || []).map((q) => (
                       <td key={q.id} className="py-3 px-4 max-w-[240px] truncate">
-                        {formatAnswerValue(resp.answers[q.id])}
+                        {formatAnswerValue(resp.answers?.[q.id])}
                       </td>
                     ))}
                     <td className="py-3 px-4 text-right">
@@ -993,7 +1198,7 @@ export function ResponsesAnalyticsView({
                     )}
                   </div>
                   <div className="text-[11px] text-zinc-400 mt-1">
-                    {new Date(resp.submitted_at).toLocaleString('vi-VN')}
+                    {formatSafeDate(resp.submitted_at)}
                   </div>
                 </div>
 
@@ -1007,7 +1212,7 @@ export function ResponsesAnalyticsView({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                {form.questions.map((q, qIndex) => (
+                {(form.questions || []).map((q, qIndex) => (
                   <div
                     key={q.id}
                     className={`p-3.5 rounded-2xl border ${
@@ -1020,7 +1225,7 @@ export function ResponsesAnalyticsView({
                       Câu {qIndex + 1}: {q.title}
                     </div>
                     <div className="text-sm font-semibold break-words">
-                      {formatAnswerValue(resp.answers[q.id])}
+                      {formatAnswerValue(resp.answers?.[q.id])}
                     </div>
                   </div>
                 ))}

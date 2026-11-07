@@ -32,7 +32,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { importFormFromCode, updateSurveyForm } from '../api';
 import type { Question, QuestionType, ServerInfo, SurveyForm, ThemeColor } from '../types';
 import { BrandLogo } from './BrandLogo';
@@ -157,6 +157,12 @@ export function FormBuilderView({
     setForm((prev) => ({ ...prev, ...patch }));
     setDirty(true);
   };
+
+  const handleResponseCountChange = useCallback((cnt: number) => {
+    setForm((prev) =>
+      prev.response_count === cnt ? prev : { ...prev, response_count: cnt }
+    );
+  }, []);
 
   const handleToggleQuizMode = (nextQuiz: boolean) => {
     const count = Math.max(1, form.questions.length);
@@ -1082,9 +1088,7 @@ export function FormBuilderView({
           <ResponsesAnalyticsView
             form={form}
             darkMode={darkMode}
-            onResponseCountChange={(cnt) =>
-              setForm((prev) => ({ ...prev, response_count: cnt }))
-            }
+            onResponseCountChange={handleResponseCountChange}
           />
         )}
 
