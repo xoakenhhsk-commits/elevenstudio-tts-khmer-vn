@@ -15,6 +15,7 @@ import {
   Copy,
   ExternalLink,
   Eye,
+  Gamepad2,
   Globe,
   GraduationCap,
   Loader2,
@@ -56,6 +57,7 @@ interface FormBuilderViewProps {
   onFormUpdated: (updated: SurveyForm) => void;
   onOpenShareModal: (form: SurveyForm) => void;
   onOpenPublicPreview: (slug: string) => void;
+  onLaunchLiveGame?: (form: SurveyForm) => void;
 }
 
 const QUESTION_TYPE_OPTIONS: {
@@ -132,6 +134,7 @@ export function FormBuilderView({
   onFormUpdated,
   onOpenShareModal,
   onOpenPublicPreview,
+  onLaunchLiveGame,
 }: FormBuilderViewProps) {
   const [form, setForm] = useState<SurveyForm>(initialForm);
   const [activeTab, setActiveTab] = useState<'questions' | 'responses' | 'settings'>(
@@ -501,6 +504,20 @@ export function FormBuilderView({
               )}
               <span className="hidden sm:inline">Lưu</span>
             </button>
+
+            {onLaunchLiveGame && (
+              <button
+                onClick={async () => {
+                  const latest = dirty ? await handleSave() : form;
+                  if (latest) onLaunchLiveGame(latest);
+                }}
+                title="Mở Đấu Trường Game Trực Tuyến (Kahoot Mode)"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-extrabold bg-gradient-to-r from-violet-600 via-purple-600 to-rose-500 hover:opacity-95 text-white shadow-sm cursor-pointer"
+              >
+                <Gamepad2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Game Live</span>
+              </button>
+            )}
 
             <button
               onClick={handleOpenShare}

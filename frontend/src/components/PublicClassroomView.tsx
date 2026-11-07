@@ -5,6 +5,7 @@ import {
   Calendar,
   CheckCircle2,
   Clock,
+  Gamepad2,
   GraduationCap,
   Loader2,
   Moon,
@@ -26,6 +27,7 @@ interface PublicClassroomViewProps {
   onToggleDarkMode: () => void;
   onBackHome: () => void;
   onOpenAssignment: (slug: string) => void;
+  onJoinLiveGame?: (pin: string) => void;
 }
 
 const BANNER_GRADIENTS: Record<string, string> = {
@@ -46,6 +48,7 @@ export function PublicClassroomView({
   onToggleDarkMode,
   onBackHome,
   onOpenAssignment,
+  onJoinLiveGame,
 }: PublicClassroomViewProps) {
   const [portal, setPortal] = useState<PublicClassroomPortal | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,6 +170,31 @@ export function PublicClassroomView({
       </header>
 
       <main className="max-w-3xl mx-auto px-3.5 sm:px-4 pt-4 sm:pt-6 space-y-4 sm:space-y-5">
+        {/* Live Game Active Alert Banner if Teacher is hosting right now */}
+        {portal.active_live_game && (
+          <div className="animate-game-pop rounded-3xl bg-gradient-to-r from-indigo-600 via-purple-600 to-rose-500 p-4 sm:p-5 text-white shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-400 text-indigo-950 text-[11px] font-black uppercase">
+                <Gamepad2 className="w-3.5 h-3.5" />
+                Đang diễn ra Đấu Trường Game Live!
+              </div>
+              <h2 className="font-display font-black text-base sm:text-lg">
+                {portal.active_live_game.title}
+              </h2>
+              <p className="text-xs text-indigo-100 font-semibold">
+                Mã PIN: <strong className="font-mono text-amber-300">{portal.active_live_game.pin}</strong> • {portal.active_live_game.player_count} bạn đang chơi
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onJoinLiveGame?.(portal.active_live_game!.pin)}
+              className="px-5 py-3 rounded-2xl bg-amber-400 hover:bg-amber-300 text-indigo-950 font-black text-xs sm:text-sm shadow-lg shrink-0 cursor-pointer"
+            >
+              🎮 VÀO PHÒNG GAME NGAY
+            </button>
+          </div>
+        )}
+
         {/* Classroom Hero Card */}
         <div className="rounded-3xl overflow-hidden shadow-md border border-black/5 dark:border-white/10">
           <div className={`bg-gradient-to-r ${bannerGrad} p-5 sm:p-7 text-white`}>
@@ -380,3 +408,4 @@ export function PublicClassroomView({
     </div>
   );
 }
+

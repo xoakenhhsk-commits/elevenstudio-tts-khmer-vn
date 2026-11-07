@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Eye,
   FilePlus2,
+  Gamepad2,
   Globe,
   GraduationCap,
   Hash,
@@ -49,6 +50,8 @@ import { AuthModal } from './components/AuthModal';
 import { BrandLogo } from './components/BrandLogo';
 import { ClassroomsManagerView } from './components/ClassroomsManagerView';
 import { FormBuilderView } from './components/FormBuilderView';
+import { LiveGameHostView } from './components/LiveGameHostView';
+import { LiveGamePlayerView } from './components/LiveGamePlayerView';
 import { PublicClassroomView } from './components/PublicClassroomView';
 import { PublicSurveyView } from './components/PublicSurveyView';
 import { SharePublishModal } from './components/SharePublishModal';
@@ -63,21 +66,50 @@ import type {
 function parseRouteFromLocation(): {
   formId: string | null;
   classroomCode: string | null;
+  playGame: boolean;
+  gamePin: string | null;
 } {
   const path = window.location.pathname;
+  if (path === '/play' || path.startsWith('/play/')) {
+    const rawPin = decodeURIComponent(path.slice(5).replace(/^\/+|\/+$/g, '')).replace(
+      /\D/g,
+      ''
+    );
+    return {
+      formId: null,
+      classroomCode: null,
+      playGame: true,
+      gamePin: rawPin || null,
+    };
+  }
   if (path.startsWith('/f/')) {
     const slug = decodeURIComponent(path.slice(3).replace(/\/+$/, ''));
-    if (slug) return { formId: slug, classroomCode: null };
+    if (slug) return { formId: slug, classroomCode: null, playGame: false, gamePin: null };
   }
   if (path.startsWith('/c/')) {
     const code = decodeURIComponent(path.slice(3).replace(/\/+$/, ''));
-    if (code) return { formId: null, classroomCode: code };
+    if (code) return { formId: null, classroomCode: code, playGame: false, gamePin: null };
   }
   const params = new URLSearchParams(window.location.search);
+  const qPin = params.get('pin');
+  if (qPin) {
+    return {
+      formId: null,
+      classroomCode: null,
+      playGame: true,
+      gamePin: qPin.replace(/\D/g, '') || null,
+    };
+  }
   const qForm = params.get('form');
   const qClass = params.get('class');
-  if (qClass) return { formId: null, classroomCode: qClass.trim() };
-  return { formId: qForm ? qForm.trim() : null, classroomCode: null };
+  if (qClass)
+    return { formId: null, classroomCode: qClass.trim(), playGame: false, gamePin: null };
+  return {
+    formId: qForm ? qForm.trim() : null,
+    classroomCode: null,
+    playGame: false,
+    gamePin: null,
+  };
 }
 
 const CARD_BANNERS: Record<string, string> = {
@@ -125,6 +157,13 @@ export function App() {
   const [publicClassroomCode, setPublicClassroomCode] = useState<string | null>(
     () => parseRouteFromLocation().classroomCode
   );
+  const [liveGameOpen, setLiveGameOpen] = useState<boolean>(
+    () => parseRouteFromLocation().playGame
+  );
+  const [liveGamePin, setLiveGamePin] = useState<string | null>(
+    () => parseRouteFromLocation().gamePin
+  );
+  const [hostingGameForm, setHostingGameForm] = useState<SurveyForm | null>(null);
   const [editingForm, setEditingForm] = useState<SurveyForm | null>(null);
   const [builderTab, setBuilderTab] = useState<'questions' | 'responses' | 'settings'>(
     'questions'
@@ -178,7 +217,9 @@ export function App() {
       const r = parseRouteFromLocation();
       setPublicIdentifier(r.formId);
       setPublicClassroomCode(r.classroomCode);
-      if (r.formId || r.classroomCode) setEditingForm(null);
+      setLiveGameOpen(r.playGame);
+      setLiveGamePin(r.gamePin);
+      if (r.formId || r.classroomCode || r.playGame) setEditingForm(null);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -206,6 +247,18 @@ export function App() {
     });
   };
 
+  const openLiveGamePlayer = (pin?: string | null) => {
+    const cleanDigits = (pin || '').replace(/\D/g, '');
+    const nextPath = cleanDigits ? `/play/${cleanDigits}` : '/play';
+    window.history.pushState({}, '', nextPath);
+    setEditingForm(null);
+    setPublicIdentifier(null);
+    setPublicClassroomCode(null);
+    setLiveGamePin(cleanDigits || null);
+    setLiveGameOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const openPublicSurvey = (identifier: string) => {
     const clean = identifier.trim();
     if (!clean) return;
@@ -213,8 +266,14 @@ export function App() {
       openPublicClassroom(clean);
       return;
     }
+    const onlyDigits = clean.replace(/\s+/g, '');
+    if (/^\d{5,6}$/.test(onlyDigits) || /^G-\d{5,6}$/i.test(onlyDigits)) {
+      openLiveGamePlayer(onlyDigits.replace(/\D/g, ''));
+      return;
+    }
     window.history.pushState({}, '', `/f/${encodeURIComponent(clean)}`);
     setEditingForm(null);
+    setLiveGameOpen(false);
     setPublicClassroomCode(null);
     setPublicIdentifier(clean);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -225,6 +284,7 @@ export function App() {
     if (!clean) return;
     window.history.pushState({}, '', `/c/${encodeURIComponent(clean)}`);
     setEditingForm(null);
+    setLiveGameOpen(false);
     setPublicIdentifier(null);
     setPublicClassroomCode(clean);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -236,6 +296,9 @@ export function App() {
     }
     setPublicIdentifier(null);
     setPublicClassroomCode(null);
+    setLiveGameOpen(false);
+    setLiveGamePin(null);
+    setHostingGameForm(null);
     setEditingForm(null);
     loadDashboardData();
   };
@@ -453,6 +516,32 @@ export function App() {
     setTimeout(() => setCopiedSlug(null), 1800);
   };
 
+  // 0A) TEACHER LIVE GAME HOST ARENA
+  if (hostingGameForm) {
+    return (
+      <LiveGameHostView
+        form={hostingGameForm}
+        onClose={() => {
+          setHostingGameForm(null);
+          loadDashboardData();
+        }}
+        onSavedToGradebook={() => {
+          loadDashboardData();
+        }}
+      />
+    );
+  }
+
+  // 0B) STUDENT LIVE GAME CONTROLLER (/play or /play/:pin)
+  if (liveGameOpen) {
+    return (
+      <LiveGamePlayerView
+        initialPin={liveGamePin}
+        onExit={backToHome}
+      />
+    );
+  }
+
   // 1A) PUBLIC CLASSROOM PORTAL ROUTE (/c/:roomCode)
   if (publicClassroomCode) {
     return (
@@ -462,6 +551,7 @@ export function App() {
         onToggleDarkMode={() => setDarkMode((d) => !d)}
         onBackHome={backToHome}
         onOpenAssignment={(slug) => openPublicSurvey(slug)}
+        onJoinLiveGame={(pin) => openLiveGamePlayer(pin)}
       />
     );
   }
@@ -496,6 +586,7 @@ export function App() {
           }}
           onOpenShareModal={(f) => setShareModalForm(f)}
           onOpenPublicPreview={(slug) => openPublicSurvey(slug)}
+          onLaunchLiveGame={(f) => setHostingGameForm(f)}
         />
 
         <SharePublishModal
@@ -605,7 +696,7 @@ export function App() {
                 type="text"
                 value={quickCode}
                 onChange={(e) => setQuickCode(e.target.value)}
-                placeholder="Mã đề KF-... / Mã lớp KL-..."
+                placeholder="PIN 6 số / KF-... / KL-..."
                 className="bg-transparent outline-none w-44 font-mono text-xs"
               />
               <button
@@ -619,6 +710,16 @@ export function App() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => openLiveGamePlayer()}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-violet-600 via-purple-600 to-rose-500 hover:opacity-95 text-white shadow-xs cursor-pointer"
+              title="Học sinh nhập mã PIN 6 số vào phòng Game"
+            >
+              <Gamepad2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Vào Game</span>
+              <span className="sm:hidden">PIN</span>
+            </button>
             {user && (
               <button
                 onClick={() => openAgentModal('agent_api', true)}
@@ -732,7 +833,7 @@ export function App() {
               type="text"
               value={quickCode}
               onChange={(e) => setQuickCode(e.target.value)}
-              placeholder="Nhập mã đề (KF-...) hoặc mã lớp (KL-...)"
+              placeholder="Nhập PIN Game 6 số, mã đề KF-... hoặc mã lớp KL-..."
               className="bg-transparent outline-none flex-1 font-mono text-xs"
             />
             <button
@@ -764,6 +865,7 @@ export function App() {
               setEditingForm(f);
             }}
             onOpenPublicClassroom={(code) => openPublicClassroom(code)}
+            onLaunchLiveGame={(f) => setHostingGameForm(f)}
           />
         </main>
       ) : (
@@ -1337,6 +1439,15 @@ export function App() {
                                 <QrCode className="w-3.5 h-3.5" />
                                 QR
                               </button>
+
+                              <button
+                                onClick={() => setHostingGameForm(form)}
+                                title="Mở Đấu Trường Game Trực Tuyến (Kahoot A/B/C/D)"
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-extrabold bg-gradient-to-r from-violet-600 via-purple-600 to-rose-500 hover:opacity-95 text-white shadow-xs cursor-pointer"
+                              >
+                                <Gamepad2 className="w-3.5 h-3.5" />
+                                Game Live
+                              </button>
                             </div>
 
                             <div className="flex items-center gap-1">
@@ -1369,7 +1480,7 @@ export function App() {
 
       {/* ==================== NATIVE-STYLE MOBILE BOTTOM NAVIGATION BAR ==================== */}
       <nav
-        className={`md:hidden fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl px-2 py-1.5 grid grid-cols-4 gap-1 ${
+        className={`md:hidden fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl px-1.5 py-1.5 grid grid-cols-5 gap-1 ${
           darkMode
             ? 'bg-zinc-950/95 border-zinc-800 text-zinc-400'
             : 'bg-white/95 border-zinc-200 text-zinc-600 shadow-lg'
@@ -1383,7 +1494,7 @@ export function App() {
           }`}
         >
           <LayoutGrid className="w-4 h-4" />
-          <span>Kho Đề ({forms.length})</span>
+          <span>Kho Đề</span>
         </button>
 
         <button
@@ -1394,13 +1505,22 @@ export function App() {
           }`}
         >
           <Users className="w-4 h-4" />
-          <span>Lớp Học ({classrooms.length})</span>
+          <span>Lớp Học</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => openLiveGamePlayer()}
+          className="py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-extrabold text-white bg-gradient-to-r from-violet-600 to-rose-500 shadow-xs cursor-pointer active:scale-95"
+        >
+          <Gamepad2 className="w-4 h-4" />
+          <span>Game PIN</span>
         </button>
 
         <button
           type="button"
           onClick={() => handleCreateHomeworkQuiz()}
-          className="py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold text-white bg-indigo-600 shadow-xs cursor-pointer active:scale-95"
+          className="py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 cursor-pointer active:scale-95"
         >
           <Plus className="w-4 h-4" />
           <span>Giao Bài</span>

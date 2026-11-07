@@ -100,6 +100,13 @@ export interface PublicClassroomPortal {
   student_names: string[];
   student_count: number;
   assignments: PublicClassroomAssignment[];
+  active_live_game?: {
+    pin: string;
+    title: string;
+    status: string;
+    player_count: number;
+    host_name: string;
+  } | null;
 }
 
 export interface Question {
@@ -287,4 +294,146 @@ export interface AuthUser {
   agent_api_key?: string;
   created_at: string;
   last_login_at: string | null;
+}
+
+// ==================== LIVE CLASSROOM GAME ARENA TYPES ====================
+
+export type LiveGameStatus =
+  | 'lobby'
+  | 'countdown'
+  | 'question'
+  | 'reveal'
+  | 'leaderboard'
+  | 'podium';
+
+export interface LiveGameAvatar {
+  id: string;
+  emoji: string;
+  label: string;
+  bg: string;
+}
+
+export interface LiveGameUrls {
+  play_url: string;
+  lobby_url: string;
+  lan_play_url: string;
+  local_play_url: string;
+}
+
+export interface LiveGameHostPlayer {
+  id: string;
+  name: string;
+  avatar: string;
+  student_class: string;
+  score: number;
+  streak: number;
+  best_streak: number;
+  correct_count: number;
+  score_10: number;
+  rank: number;
+  previous_rank: number;
+  answered_current: boolean;
+  current_answer?: {
+    choice_index: number | null;
+    is_correct: boolean;
+    points_earned: number;
+    elapsed_ms: number;
+  } | null;
+}
+
+export interface LiveGameHostState {
+  pin: string;
+  form_id: string;
+  form_slug: string;
+  title: string;
+  classroom_id?: string | null;
+  classroom_name?: string | null;
+  host_name: string;
+  status: LiveGameStatus;
+  question_time_seconds: number;
+  speed_bonus: boolean;
+  show_options_on_phone: boolean;
+  current_question_index: number;
+  total_questions: number;
+  remaining_ms: number;
+  player_count: number;
+  answered_count: number;
+  saved_to_gradebook: boolean;
+  saved_count: number;
+  current_question: {
+    id: string;
+    index: number;
+    title: string;
+    description: string;
+    options: string[];
+    correct_index: number | null;
+    explanation: string;
+    option_counts: number[];
+  };
+  players: LiveGameHostPlayer[];
+}
+
+export interface LiveGameRoomPublicInfo {
+  pin: string;
+  title: string;
+  classroom_name?: string | null;
+  student_roster: string[];
+  host_name: string;
+  status: LiveGameStatus;
+  player_count: number;
+  total_questions: number;
+  avatars: LiveGameAvatar[];
+}
+
+export interface LiveGamePlayerState {
+  pin: string;
+  title: string;
+  classroom_name?: string | null;
+  student_roster: string[];
+  host_name: string;
+  status: LiveGameStatus;
+  show_options_on_phone: boolean;
+  current_question_index: number;
+  total_questions: number;
+  question_time_seconds: number;
+  remaining_ms: number;
+  player_count: number;
+  current_question: {
+    id: string;
+    index: number;
+    option_count: number;
+    title: string;
+    options: string[];
+    correct_index: number | null;
+    explanation: string;
+  };
+  me: {
+    id: string;
+    name: string;
+    avatar: string;
+    student_class: string;
+    score: number;
+    streak: number;
+    best_streak: number;
+    correct_count: number;
+    score_10: number;
+    rank: number;
+    previous_rank: number;
+    has_answered: boolean;
+    choice_index: number | null;
+    last_result?: {
+      is_correct: boolean;
+      points_earned: number;
+      elapsed_ms: number;
+    } | null;
+  } | null;
+  top_players: {
+    id: string;
+    name: string;
+    avatar: string;
+    score: number;
+    streak: number;
+    rank: number;
+    score_10: number;
+  }[];
 }

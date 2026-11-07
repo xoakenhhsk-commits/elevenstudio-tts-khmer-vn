@@ -8,7 +8,7 @@ import os
 import random
 import socket
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +44,22 @@ from database import (
     update_response_grade,
 )
 from form_agent import generate_form_from_prompt, parse_quick_code_to_form
+from live_game import (
+    PLAYER_AVATARS,
+    broadcast_room_state,
+    create_game_room,
+    find_active_room_for_classroom,
+    get_room,
+    host_perform_action,
+    join_game_room,
+    register_ws,
+    remove_player_from_room,
+    serialize_room_for_host,
+    serialize_room_for_player,
+    submit_player_answer,
+    unregister_ws,
+    update_room_settings,
+)
 from templates_catalog import SURVEY_TEMPLATES
 
 
@@ -54,9 +70,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="KromaForms Studio & Classroom LMS API",
-    description="Private Multi-Tenant Classrooms, Auto-Graded Homework Quizzes, Anti-Cheat Proctoring & Surveys",
-    version="4.0.0",
+    title="KromaForms Studio, Classroom LMS & Live Game Arena API",
+    description="Private Multi-Tenant Classrooms, Kahoot-Style Live Quiz Games, Auto-Graded Homework & Anti-Cheat Proctoring",
+    version="5.0.0",
     lifespan=lifespan,
 )
 
@@ -102,6 +118,20 @@ def build_public_survey_urls(slug: str) -> dict[str, str]:
         "public_url": f"{primary_base}/f/{slug}",
         "local_url": f"{local_base}/f/{slug}",
         "lan_url": f"{lan_base}/f/{slug}",
+    }
+
+
+def build_public_game_urls(pin: str) -> dict[str, str]:
+    lan_ip = get_lan_ip()
+    tunnel = get_public_tunnel_url()
+    local_base = "http://localhost:5173"
+    lan_base = f"http://{lan_ip}:5173"
+    primary_base = tunnel or (lan_base if lan_ip != "127.0.0.1" else local_base)
+    return {
+        "play_url": f"{primary_base}/play/{pin}",
+        "lobby_url": f"{primary_base}/play",
+        "lan_play_url": f"{lan_base}/play/{pin}",
+        "local_play_url": f"{local_base}/play/{pin}",
     }
 
 
@@ -403,8 +433,8 @@ def _grade_quiz_submission(
 async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
-        "app": "KromaForms Studio & Classroom LMS",
-        "version": "4.0.0",
+        "app": "KromaForms Studio, Classroom LMS & Live Game Arena",
+        "version": "5.0.0",
         "lan_ip": get_lan_ip(),
         "public_tunnel_url": get_public_tunnel_url(),
     }
@@ -721,6 +751,7 @@ async def fetch_public_classroom_portal(identifier: str) -> dict[str, Any]:
         "student_names": cls["student_names"],
         "student_count": cls["student_count"],
         "assignments": assignments,
+        "active_live_game": find_active_room_for_classroom(cls["id"]),
     }
 
 
@@ -1501,6 +1532,329 @@ async def remove_single_response(
     if not ok:
         raise HTTPException(status_code=404, detail="Không tìm thấy phản hồi.")
     return {"deleted": True, "id": response_id}
+
+
+# ==================== KAHOOT-STYLE LIVE CLASSROOM GAME ARENA ====================
+
+class CreateLiveRoomRequest(BaseModel):
+    form_id: str
+    question_time_seconds: int = Field(default=20, ge=5, le=120)
+    speed_bonus: bool = True
+    show_options_on_phone: bool = False
+
+
+class LiveHostActionRequest(BaseModel):
+    action: str  # start_game | reveal_answer | show_leaderboard | next_question | finish_game
+
+
+class LiveRoomSettingsRequest(BaseModel):
+    question_time_seconds: int | None = None
+    speed_bonus: bool | None = None
+    show_options_on_phone: bool | None = None
+
+
+class JoinLiveRoomRequest(BaseModel):
+    name: str
+    avatar: str = "🦊"
+    student_class: str = ""
+    player_token: str | None = None
+
+
+class SubmitLiveAnswerRequest(BaseModel):
+    player_id: str
+    player_token: str
+    choice_index: int
+
+
+def _assert_room_host(pin: str, user: dict[str, Any]) -> dict[str, Any]:
+    room = get_room(pin)
+    if not room:
+        raise HTTPException(status_code=404, detail="Phòng Game không tồn tại hoặc đã đóng.")
+    if room.get("host_user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Bạn không phải Giáo viên chủ phòng của Game này.")
+    return room
+
+
+@app.get("/api/live/avatars")
+async def get_live_game_avatars() -> dict[str, Any]:
+    return {"avatars": PLAYER_AVATARS}
+
+
+@app.post("/api/live/rooms")
+async def host_create_live_room(
+    req: CreateLiveRoomRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    form = _assert_form_owner(get_form_by_id(req.form_id), user)
+    room = create_game_room(
+        form=form,
+        host_user_id=user["id"],
+        host_name=user.get("full_name") or user["email"],
+        question_time_seconds=req.question_time_seconds,
+        speed_bonus=req.speed_bonus,
+        show_options_on_phone=req.show_options_on_phone,
+    )
+    return {
+        "room": serialize_room_for_host(room),
+        "urls": build_public_game_urls(room["pin"]),
+    }
+
+
+@app.get("/api/live/rooms/{pin}/host")
+async def host_get_live_room_state(
+    pin: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    room = _assert_room_host(pin, user)
+    return {
+        "room": serialize_room_for_host(room),
+        "urls": build_public_game_urls(room["pin"]),
+    }
+
+
+@app.post("/api/live/rooms/{pin}/action")
+async def host_live_room_action(
+    pin: str,
+    req: LiveHostActionRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    room = _assert_room_host(pin, user)
+    if req.action not in (
+        "start_game",
+        "reveal_answer",
+        "show_leaderboard",
+        "next_question",
+        "finish_game",
+    ):
+        raise HTTPException(status_code=400, detail="Hành động điều khiển Game không hợp lệ.")
+    host_perform_action(room, req.action)
+    await broadcast_room_state(room["pin"])
+    return {
+        "room": serialize_room_for_host(room),
+        "urls": build_public_game_urls(room["pin"]),
+    }
+
+
+@app.patch("/api/live/rooms/{pin}/settings")
+async def host_patch_live_room_settings(
+    pin: str,
+    req: LiveRoomSettingsRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    room = _assert_room_host(pin, user)
+    update_room_settings(
+        room,
+        question_time_seconds=req.question_time_seconds,
+        speed_bonus=req.speed_bonus,
+        show_options_on_phone=req.show_options_on_phone,
+    )
+    await broadcast_room_state(room["pin"])
+    return {
+        "room": serialize_room_for_host(room),
+        "urls": build_public_game_urls(room["pin"]),
+    }
+
+
+@app.delete("/api/live/rooms/{pin}/players/{player_id}")
+async def host_kick_player(
+    pin: str,
+    player_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    room = _assert_room_host(pin, user)
+    remove_player_from_room(room, player_id)
+    await broadcast_room_state(room["pin"])
+    return {"room": serialize_room_for_host(room)}
+
+
+@app.post("/api/live/rooms/{pin}/save-to-gradebook")
+async def host_save_game_to_gradebook(
+    pin: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    room = _assert_room_host(pin, user)
+    if room.get("saved_to_gradebook"):
+        return {
+            "saved": True,
+            "saved_count": room.get("saved_count", 0),
+            "room": serialize_room_for_host(room),
+        }
+
+    total_q = len(room["questions"])
+    saved_count = 0
+    for p in room["players"].values():
+        mapped_answers: dict[str, Any] = {}
+        for q in room["questions"]:
+            ans_rec = p["answers"].get(q["id"])
+            c_idx = ans_rec.get("choice_index") if ans_rec else None
+            if c_idx is not None and 0 <= int(c_idx) < len(q["options"]):
+                mapped_answers[q["id"]] = q["options"][int(c_idx)]
+            else:
+                mapped_answers[q["id"]] = ""
+
+        score_10 = round((int(p["correct_count"]) / total_q) * 10.0, 2) if total_q > 0 else 0.0
+        duration_sec = max(1, round(float(p.get("total_time_ms") or 0.0) / 1000.0))
+        note = (
+            f"🎮 Game Live PIN {room['pin']} • Hạng #{p['rank']} • "
+            f"{p['score']} pts • Đúng {p['correct_count']}/{total_q} câu"
+        )
+        submit_response(
+            form_id=room["form_id"],
+            answers=mapped_answers,
+            respondent_name=p["name"],
+            respondent_email=None,
+            student_class=p.get("student_class") or room.get("classroom_name") or "",
+            auto_score=score_10,
+            max_score=10.0,
+            bonus_score=0.0,
+            final_score=score_10,
+            teacher_note=note,
+            cheat_count=0,
+            cheat_logs=[],
+            auto_submitted_cheat=False,
+            duration_seconds=duration_sec,
+        )
+        saved_count += 1
+
+    room["saved_to_gradebook"] = True
+    room["saved_count"] = saved_count
+    await broadcast_room_state(room["pin"])
+    return {
+        "saved": True,
+        "saved_count": saved_count,
+        "room": serialize_room_for_host(room),
+    }
+
+
+@app.get("/api/live/rooms/{pin}/info")
+async def public_get_live_room_info(pin: str) -> dict[str, Any]:
+    room = get_room(pin)
+    if not room:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy phòng Game với mã PIN này. Hãy kiểm tra lại mã 6 số trên màn hình Giáo viên!",
+        )
+    return {
+        "pin": room["pin"],
+        "title": room["title"],
+        "classroom_name": room.get("classroom_name"),
+        "student_roster": room.get("student_roster") or [],
+        "host_name": room["host_name"],
+        "status": room["status"],
+        "player_count": len(room["players"]),
+        "total_questions": len(room["questions"]),
+        "avatars": PLAYER_AVATARS,
+    }
+
+
+@app.post("/api/live/rooms/{pin}/join")
+async def public_join_live_room(
+    pin: str,
+    req: JoinLiveRoomRequest,
+) -> dict[str, Any]:
+    try:
+        room, player = join_game_room(
+            pin=pin,
+            name=req.name,
+            avatar=req.avatar,
+            student_class=req.student_class,
+            player_token=req.player_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await broadcast_room_state(room["pin"])
+    return {
+        "player_id": player["id"],
+        "player_token": player["token"],
+        "state": serialize_room_for_player(room, player["id"]),
+    }
+
+
+@app.get("/api/live/rooms/{pin}/state")
+async def public_get_player_room_state(
+    pin: str,
+    player_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    room = get_room(pin)
+    if not room:
+        raise HTTPException(status_code=404, detail="Phòng Game đã đóng hoặc mã PIN không đúng.")
+    return {"state": serialize_room_for_player(room, player_id)}
+
+
+@app.post("/api/live/rooms/{pin}/answer")
+async def public_submit_live_answer(
+    pin: str,
+    req: SubmitLiveAnswerRequest,
+) -> dict[str, Any]:
+    room = get_room(pin)
+    if not room:
+        raise HTTPException(status_code=404, detail="Phòng Game không tồn tại.")
+    try:
+        ans = submit_player_answer(
+            room=room,
+            player_id=req.player_id,
+            player_token=req.player_token,
+            choice_index=req.choice_index,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await broadcast_room_state(room["pin"])
+    return {
+        "accepted": True,
+        "choice_index": ans["choice_index"],
+        "elapsed_ms": ans["elapsed_ms"],
+        "state": serialize_room_for_player(room, req.player_id),
+    }
+
+
+@app.websocket("/api/live/ws/{pin}")
+async def live_game_websocket(
+    ws: WebSocket,
+    pin: str,
+    role: str = Query(default="player"),
+    player_id: str | None = Query(default=None),
+    auth_token: str | None = Query(default=None),
+):
+    room = get_room(pin)
+    if not room:
+        await ws.close(code=4404)
+        return
+
+    actual_role = "player"
+    if role == "host":
+        user = get_user_by_token(auth_token or "") if auth_token else None
+        if not user or user["id"] != room.get("host_user_id"):
+            await ws.close(code=4403)
+            return
+        actual_role = "host"
+
+    await register_ws(room["pin"], ws, actual_role, player_id=player_id)
+    try:
+        # Immediately push initial snapshot
+        if actual_role == "host":
+            await ws.send_json({"type": "state", "data": serialize_room_for_host(room)})
+        else:
+            await ws.send_json({"type": "state", "data": serialize_room_for_player(room, player_id)})
+
+        while True:
+            msg = await ws.receive_text()
+            if msg == "ping":
+                cur_room = get_room(pin)
+                if cur_room:
+                    if actual_role == "host":
+                        await ws.send_json({"type": "state", "data": serialize_room_for_host(cur_room)})
+                    else:
+                        await ws.send_json({"type": "state", "data": serialize_room_for_player(cur_room, player_id)})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        unregister_ws(room["pin"], ws)
 
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"

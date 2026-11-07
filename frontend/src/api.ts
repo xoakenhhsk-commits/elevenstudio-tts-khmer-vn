@@ -5,6 +5,11 @@ import type {
   ClassroomStudent,
   FormAnalytics,
   FormResponseItem,
+  LiveGameAvatar,
+  LiveGameHostState,
+  LiveGamePlayerState,
+  LiveGameRoomPublicInfo,
+  LiveGameUrls,
   PublicClassroomPortal,
   QuizSubmissionResult,
   ServerInfo,
@@ -458,4 +463,192 @@ export function getCsvExportUrl(formId: string): string {
   const token = getStoredToken();
   const q = token ? `?token=${encodeURIComponent(token)}` : '';
   return `${resolvedBaseUrl}/api/forms/${formId}/export.csv${q}`;
+}
+
+// ==================== LIVE CLASSROOM GAME ARENA API ====================
+
+export function buildLiveGameWsUrl(
+  pin: string,
+  role: 'host' | 'player',
+  playerId?: string | null
+): string {
+  const cleanPin = pin.replace(/\D/g, '');
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let hostPart = window.location.host;
+  if (resolvedBaseUrl.startsWith('http://')) {
+    hostPart = resolvedBaseUrl.slice('http://'.length);
+  } else if (resolvedBaseUrl.startsWith('https://')) {
+    hostPart = resolvedBaseUrl.slice('https://'.length);
+  }
+  const params = new URLSearchParams({ role });
+  if (role === 'host') {
+    const token = getStoredToken();
+    if (token) params.set('auth_token', token);
+  } else if (playerId) {
+    params.set('player_id', playerId);
+  }
+  return `${protocol}//${hostPart}/api/live/ws/${encodeURIComponent(cleanPin)}?${params.toString()}`;
+}
+
+export async function fetchLiveGameAvatars(): Promise<LiveGameAvatar[]> {
+  const res = await apiFetch('/api/live/avatars');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.avatars || [];
+}
+
+export async function createLiveGameRoom(payload: {
+  form_id: string;
+  question_time_seconds?: number;
+  speed_bonus?: boolean;
+  show_options_on_phone?: boolean;
+}): Promise<{ room: LiveGameHostState; urls: LiveGameUrls }> {
+  const res = await apiFetch('/api/live/rooms', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tạo phòng Game Live' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể mở phòng Game Live');
+  return data;
+}
+
+export async function fetchHostLiveRoomState(
+  pin: string
+): Promise<{ room: LiveGameHostState; urls: LiveGameUrls }> {
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(pin)}/host`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tải phòng Game' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tải trạng thái phòng Game');
+  return data;
+}
+
+export async function triggerHostLiveAction(
+  pin: string,
+  action: 'start_game' | 'reveal_answer' | 'show_leaderboard' | 'next_question' | 'finish_game'
+): Promise<{ room: LiveGameHostState; urls: LiveGameUrls }> {
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(pin)}/action`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ action }),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi điều khiển Game' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể thực hiện thao tác Game');
+  return data;
+}
+
+export async function updateHostLiveRoomSettings(
+  pin: string,
+  settings: {
+    question_time_seconds?: number;
+    speed_bonus?: boolean;
+    show_options_on_phone?: boolean;
+  }
+): Promise<{ room: LiveGameHostState; urls: LiveGameUrls }> {
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(pin)}/settings`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(settings),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi cập nhật cài đặt phòng' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể cập nhật cài đặt');
+  return data;
+}
+
+export async function kickLivePlayer(
+  pin: string,
+  playerId: string
+): Promise<{ room: LiveGameHostState }> {
+  const res = await apiFetch(
+    `/api/live/rooms/${encodeURIComponent(pin)}/players/${encodeURIComponent(playerId)}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }
+  );
+  const data = await res.json().catch(() => ({ detail: 'Lỗi xóa người chơi' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể xóa người chơi');
+  return data;
+}
+
+export async function saveLiveGameToGradebook(
+  pin: string
+): Promise<{ saved: boolean; saved_count: number; room: LiveGameHostState }> {
+  const res = await apiFetch(
+    `/api/live/rooms/${encodeURIComponent(pin)}/save-to-gradebook`,
+    {
+      method: 'POST',
+      headers: authHeaders(),
+    }
+  );
+  const data = await res.json().catch(() => ({ detail: 'Lỗi lưu điểm vào sổ điểm' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể lưu điểm Game vào bảng điểm');
+  return data;
+}
+
+export async function fetchPublicLiveRoomInfo(
+  pin: string
+): Promise<LiveGameRoomPublicInfo> {
+  const cleanPin = pin.replace(/\D/g, '');
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(cleanPin)}/info`);
+  const data = await res.json().catch(() => ({ detail: 'Không tìm thấy phòng Game' }));
+  if (!res.ok) throw new Error(data.detail || 'Mã PIN phòng Game không tồn tại');
+  return data;
+}
+
+export async function joinPublicLiveRoom(
+  pin: string,
+  payload: {
+    name: string;
+    avatar: string;
+    student_class?: string;
+    player_token?: string | null;
+  }
+): Promise<{ player_id: string; player_token: string; state: LiveGamePlayerState }> {
+  const cleanPin = pin.replace(/\D/g, '');
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(cleanPin)}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi vào phòng Game' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tham gia phòng Game');
+  return data;
+}
+
+export async function fetchPlayerLiveRoomState(
+  pin: string,
+  playerId?: string | null
+): Promise<LiveGamePlayerState> {
+  const cleanPin = pin.replace(/\D/g, '');
+  const q = playerId ? `?player_id=${encodeURIComponent(playerId)}` : '';
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(cleanPin)}/state${q}`);
+  const data = await res.json().catch(() => ({ detail: 'Lỗi đồng bộ phòng Game' }));
+  if (!res.ok) throw new Error(data.detail || 'Phòng Game đã đóng');
+  return data.state;
+}
+
+export async function submitPublicLiveAnswer(
+  pin: string,
+  payload: {
+    player_id: string;
+    player_token: string;
+    choice_index: number;
+  }
+): Promise<{
+  accepted: boolean;
+  choice_index: number;
+  elapsed_ms: number;
+  state: LiveGamePlayerState;
+}> {
+  const cleanPin = pin.replace(/\D/g, '');
+  const res = await apiFetch(`/api/live/rooms/${encodeURIComponent(cleanPin)}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi gửi đáp án' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể chốt đáp án');
+  return data;
 }

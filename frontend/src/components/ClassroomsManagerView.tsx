@@ -7,6 +7,7 @@ import {
   Download,
   ExternalLink,
   FileSpreadsheet,
+  Gamepad2,
   GraduationCap,
   Link2,
   Loader2,
@@ -49,6 +50,7 @@ interface ClassroomsManagerViewProps {
   onOpenAiForClass: (classroom: Classroom) => void;
   onOpenFormBuilder: (form: SurveyForm, tab?: 'questions' | 'responses' | 'settings') => void;
   onOpenPublicClassroom: (roomCode: string) => void;
+  onLaunchLiveGame?: (form: SurveyForm) => void;
 }
 
 const CLASS_THEMES: { id: ThemeColor; label: string; grad: string }[] = [
@@ -92,6 +94,7 @@ export function ClassroomsManagerView({
   onOpenAiForClass,
   onOpenFormBuilder,
   onOpenPublicClassroom,
+  onLaunchLiveGame,
 }: ClassroomsManagerViewProps) {
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'assignments' | 'students' | 'gradebook'>(
@@ -381,11 +384,10 @@ export function ClassroomsManagerView({
       {!activeClassroom ? (
         <>
           <div
-            className={`p-5 sm:p-6 rounded-3xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-              darkMode
+            className={`p-5 sm:p-6 rounded-3xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${darkMode
                 ? 'bg-zinc-900/90 border-zinc-800'
                 : 'bg-white border-zinc-200 shadow-2xs'
-            }`}
+              }`}
           >
             <div className="space-y-1">
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-indigo-500/15 text-indigo-500">
@@ -412,11 +414,10 @@ export function ClassroomsManagerView({
 
           {classrooms.length === 0 ? (
             <div
-              className={`p-10 sm:p-14 rounded-3xl border text-center space-y-4 ${
-                darkMode
+              className={`p-10 sm:p-14 rounded-3xl border text-center space-y-4 ${darkMode
                   ? 'bg-zinc-900/60 border-zinc-800'
                   : 'bg-white border-zinc-200'
-              }`}
+                }`}
             >
               <div className="w-14 h-14 rounded-3xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center mx-auto">
                 <GraduationCap className="w-7 h-7" />
@@ -450,11 +451,10 @@ export function ClassroomsManagerView({
                 return (
                   <div
                     key={cls.id}
-                    className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${
-                      darkMode
+                    className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${darkMode
                         ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
                         : 'bg-white border-zinc-200 shadow-2xs hover:shadow-md'
-                    }`}
+                      }`}
                   >
                     <div>
                       <div className={`bg-gradient-to-r ${th.grad} p-4 sm:p-5 text-white`}>
@@ -480,11 +480,10 @@ export function ClassroomsManagerView({
                       <div className="p-4 sm:p-5 space-y-3">
                         <div className="grid grid-cols-2 gap-2.5">
                           <div
-                            className={`p-3 rounded-2xl border ${
-                              darkMode
+                            className={`p-3 rounded-2xl border ${darkMode
                                 ? 'bg-zinc-950 border-zinc-800'
                                 : 'bg-zinc-50 border-zinc-200/70'
-                            }`}
+                              }`}
                           >
                             <div className="text-[11px] text-zinc-500">Sĩ số lớp</div>
                             <div className="font-display text-lg font-extrabold">
@@ -494,11 +493,10 @@ export function ClassroomsManagerView({
                           </div>
 
                           <div
-                            className={`p-3 rounded-2xl border ${
-                              darkMode
+                            className={`p-3 rounded-2xl border ${darkMode
                                 ? 'bg-zinc-950 border-zinc-800'
                                 : 'bg-zinc-50 border-zinc-200/70'
-                            }`}
+                              }`}
                           >
                             <div className="text-[11px] text-zinc-500">Đã giao</div>
                             <div className="font-display text-lg font-extrabold text-indigo-500">
@@ -510,11 +508,10 @@ export function ClassroomsManagerView({
 
                         {/* Share Class Portal Link */}
                         <div
-                          className={`p-2.5 rounded-2xl border flex items-center justify-between gap-2 text-xs ${
-                            darkMode
+                          className={`p-2.5 rounded-2xl border flex items-center justify-between gap-2 text-xs ${darkMode
                               ? 'bg-zinc-950 border-zinc-800'
                               : 'bg-indigo-50/60 border-indigo-200/70'
-                          }`}
+                            }`}
                         >
                           <button
                             type="button"
@@ -535,9 +532,8 @@ export function ClassroomsManagerView({
                     </div>
 
                     <div
-                      className={`px-4 py-3 border-t flex items-center justify-between gap-2 ${
-                        darkMode ? 'border-zinc-800 bg-zinc-950/40' : 'border-zinc-100 bg-zinc-50/60'
-                      }`}
+                      className={`px-4 py-3 border-t flex items-center justify-between gap-2 ${darkMode ? 'border-zinc-800 bg-zinc-950/40' : 'border-zinc-100 bg-zinc-50/60'
+                        }`}
                     >
                       <button
                         type="button"
@@ -576,21 +572,19 @@ export function ClassroomsManagerView({
         <div className="space-y-4 sm:space-y-5">
           {/* Top Class Banner */}
           <div
-            className={`p-4 sm:p-6 rounded-3xl border space-y-4 ${
-              darkMode
+            className={`p-4 sm:p-6 rounded-3xl border space-y-4 ${darkMode
                 ? 'bg-zinc-900/90 border-zinc-800'
                 : 'bg-white border-zinc-200 shadow-2xs'
-            }`}
+              }`}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setSelectedClassId(null)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
-                  darkMode
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${darkMode
                     ? 'border-zinc-800 bg-zinc-950 text-zinc-300'
                     : 'border-zinc-200 bg-zinc-50 text-zinc-700'
-                }`}
+                  }`}
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
                 Tất cả Lớp học
@@ -600,11 +594,10 @@ export function ClassroomsManagerView({
                 <button
                   type="button"
                   onClick={() => openEditClassModal(activeClassroom)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
-                    darkMode
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${darkMode
                       ? 'border-zinc-700 text-zinc-200 hover:bg-zinc-800'
                       : 'border-zinc-200 text-zinc-700 hover:bg-zinc-100'
-                  }`}
+                    }`}
                 >
                   Sửa thông tin &amp; Nhập hàng loạt tên HS
                 </button>
@@ -664,11 +657,10 @@ export function ClassroomsManagerView({
 
             {/* Public Class Portal Link Bar */}
             <div
-              className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
-                darkMode
+              className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${darkMode
                   ? 'bg-zinc-950 border-zinc-800'
                   : 'bg-indigo-50/70 border-indigo-200/80'
-              }`}
+                }`}
             >
               <div className="flex items-center gap-2 min-w-0">
                 <Link2 className="w-4 h-4 text-indigo-500 shrink-0" />
@@ -698,9 +690,8 @@ export function ClassroomsManagerView({
 
             {/* 3 Mobile-Scrollable Sub-Tabs */}
             <div
-              className={`flex items-center gap-1 p-1 rounded-2xl overflow-x-auto no-scrollbar ${
-                darkMode ? 'bg-zinc-950' : 'bg-zinc-100'
-              }`}
+              className={`flex items-center gap-1 p-1 rounded-2xl overflow-x-auto no-scrollbar ${darkMode ? 'bg-zinc-950' : 'bg-zinc-100'
+                }`}
             >
               {[
                 {
@@ -726,13 +717,12 @@ export function ClassroomsManagerView({
                     key={t.id}
                     type="button"
                     onClick={() => setDetailTab(t.id as typeof detailTab)}
-                    className={`flex-1 px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${
-                      active
+                    className={`flex-1 px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${active
                         ? darkMode
                           ? 'bg-zinc-800 text-white shadow-xs'
                           : 'bg-white text-zinc-950 shadow-xs'
                         : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'
-                    }`}
+                      }`}
                   >
                     <Icon className="w-3.5 h-3.5 shrink-0" />
                     {t.label}
@@ -748,20 +738,18 @@ export function ClassroomsManagerView({
               {/* Assign Existing Form Picker */}
               {unassignedForms.length > 0 && (
                 <div
-                  className={`p-4 rounded-3xl border flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 ${
-                    darkMode
+                  className={`p-4 rounded-3xl border flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 ${darkMode
                       ? 'bg-zinc-900/90 border-zinc-800'
                       : 'bg-white border-zinc-200'
-                  }`}
+                    }`}
                 >
                   <select
                     value={assignFormId}
                     onChange={(e) => setAssignFormId(e.target.value)}
-                    className={`flex-1 px-3.5 py-2.5 rounded-2xl text-xs font-semibold border outline-none ${
-                      darkMode
+                    className={`flex-1 px-3.5 py-2.5 rounded-2xl text-xs font-semibold border outline-none ${darkMode
                         ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
                         : 'bg-zinc-50 border-zinc-200 text-zinc-900'
-                    }`}
+                      }`}
                   >
                     <option value="">
                       -- Chọn đề bài tập có sẵn trong kho để giao cho {activeClassroom.name} --
@@ -785,11 +773,10 @@ export function ClassroomsManagerView({
 
               {classForms.length === 0 ? (
                 <div
-                  className={`p-10 rounded-3xl border text-center space-y-3 ${
-                    darkMode
+                  className={`p-10 rounded-3xl border text-center space-y-3 ${darkMode
                       ? 'bg-zinc-900/60 border-zinc-800'
                       : 'bg-white border-zinc-200'
-                  }`}
+                    }`}
                 >
                   <GraduationCap className="w-10 h-10 text-zinc-400 mx-auto" />
                   <p className="text-sm font-bold">
@@ -808,11 +795,10 @@ export function ClassroomsManagerView({
                   {classForms.map((f) => (
                     <div
                       key={f.id}
-                      className={`p-4 sm:p-5 rounded-3xl border flex flex-col justify-between gap-4 ${
-                        darkMode
+                      className={`p-4 sm:p-5 rounded-3xl border flex flex-col justify-between gap-4 ${darkMode
                           ? 'bg-zinc-900/90 border-zinc-800'
                           : 'bg-white border-zinc-200 shadow-2xs'
-                      }`}
+                        }`}
                     >
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -852,14 +838,24 @@ export function ClassroomsManagerView({
                         >
                           Xem Điểm Bài Này
                         </button>
+                        {onLaunchLiveGame && (
+                          <button
+                            type="button"
+                            onClick={() => onLaunchLiveGame(f)}
+                            className="py-2 px-3 rounded-xl text-xs font-extrabold bg-gradient-to-r from-violet-600 to-rose-500 text-white inline-flex items-center gap-1 shadow-2xs cursor-pointer"
+                            title="Mở phòng Game Live cho lớp chơi trực tiếp"
+                          >
+                            <Gamepad2 className="w-3.5 h-3.5" />
+                            Game
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onOpenFormBuilder(f, 'questions')}
-                          className={`py-2 px-3 rounded-xl text-xs font-semibold border cursor-pointer ${
-                            darkMode
+                          className={`py-2 px-3 rounded-xl text-xs font-semibold border cursor-pointer ${darkMode
                               ? 'border-zinc-700 text-zinc-200'
                               : 'border-zinc-200 text-zinc-700'
-                          }`}
+                            }`}
                         >
                           Sửa đề
                         </button>
@@ -883,9 +879,8 @@ export function ClassroomsManagerView({
           {detailTab === 'students' && (
             <div className="space-y-4">
               <div
-                className={`p-4 rounded-3xl border flex flex-col sm:flex-row gap-2.5 ${
-                  darkMode ? 'bg-zinc-900/90 border-zinc-800' : 'bg-white border-zinc-200'
-                }`}
+                className={`p-4 rounded-3xl border flex flex-col sm:flex-row gap-2.5 ${darkMode ? 'bg-zinc-900/90 border-zinc-800' : 'bg-white border-zinc-200'
+                  }`}
               >
                 <form
                   onSubmit={handleQuickAddSingleStudent}
@@ -896,11 +891,10 @@ export function ClassroomsManagerView({
                     value={quickAddName}
                     onChange={(e) => setQuickAddName(e.target.value)}
                     placeholder="Nhập họ tên học sinh mới để thêm nhanh vào lớp..."
-                    className={`flex-1 px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm border outline-none ${
-                      darkMode
+                    className={`flex-1 px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm border outline-none ${darkMode
                         ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
                         : 'bg-zinc-50 border-zinc-200 text-zinc-900'
-                    }`}
+                      }`}
                   />
                   <button
                     type="submit"
@@ -912,9 +906,8 @@ export function ClassroomsManagerView({
                 </form>
 
                 <div
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border sm:w-64 ${
-                    darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
-                  }`}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border sm:w-64 ${darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
+                    }`}
                 >
                   <Search className="w-3.5 h-3.5 text-zinc-400" />
                   <input
@@ -935,11 +928,10 @@ export function ClassroomsManagerView({
                   .map((st, idx) => (
                     <div
                       key={st.id}
-                      className={`p-3.5 sm:p-4 rounded-2xl border flex items-center justify-between gap-2 ${
-                        darkMode
+                      className={`p-3.5 sm:p-4 rounded-2xl border flex items-center justify-between gap-2 ${darkMode
                           ? 'bg-zinc-900/90 border-zinc-800'
                           : 'bg-white border-zinc-200 shadow-2xs'
-                      }`}
+                        }`}
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
@@ -1000,7 +992,7 @@ export function ClassroomsManagerView({
                   Điểm Trung Bình Chung Cả Lớp:{' '}
                   <span className="text-emerald-500 font-extrabold text-base">
                     {gradebookData?.class_average_10 !== null &&
-                    gradebookData?.class_average_10 !== undefined
+                      gradebookData?.class_average_10 !== undefined
                       ? `${gradebookData.class_average_10}/10đ`
                       : '—'}
                   </span>
@@ -1025,19 +1017,17 @@ export function ClassroomsManagerView({
                 </div>
               ) : gradebookData ? (
                 <div
-                  className={`rounded-3xl border overflow-hidden ${
-                    darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'
-                  }`}
+                  className={`rounded-3xl border overflow-hidden ${darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'
+                    }`}
                 >
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr
-                          className={`border-b ${
-                            darkMode
+                          className={`border-b ${darkMode
                               ? 'bg-zinc-950 border-zinc-800 text-zinc-400'
                               : 'bg-zinc-50 border-zinc-200 text-zinc-600'
-                          }`}
+                            }`}
                         >
                           <th className="py-3.5 px-3 font-bold">#</th>
                           <th className="py-3.5 px-3 font-bold whitespace-nowrap">
@@ -1106,9 +1096,8 @@ export function ClassroomsManagerView({
         <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
           <form
             onSubmit={handleSaveClassForm}
-            className={`w-full sm:max-w-xl rounded-t-3xl sm:rounded-3xl border p-5 sm:p-6 max-h-[92vh] overflow-y-auto space-y-4 ${
-              darkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-100' : 'bg-white border-zinc-200 text-zinc-900'
-            }`}
+            className={`w-full sm:max-w-xl rounded-t-3xl sm:rounded-3xl border p-5 sm:p-6 max-h-[92vh] overflow-y-auto space-y-4 ${darkMode ? 'bg-zinc-900 border-zinc-800 text-zinc-100' : 'bg-white border-zinc-200 text-zinc-900'
+              }`}
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-lg font-extrabold">
@@ -1134,11 +1123,10 @@ export function ClassroomsManagerView({
                   value={clsName}
                   onChange={(e) => setClsName(e.target.value)}
                   placeholder="VD: Lớp 10A1"
-                  className={`w-full px-3.5 py-2.5 rounded-2xl text-sm border outline-none ${
-                    darkMode
+                  className={`w-full px-3.5 py-2.5 rounded-2xl text-sm border outline-none ${darkMode
                       ? 'bg-zinc-950 border-zinc-800'
                       : 'bg-zinc-50 border-zinc-200'
-                  }`}
+                    }`}
                 />
               </div>
 
@@ -1149,11 +1137,10 @@ export function ClassroomsManagerView({
                   value={clsSubject}
                   onChange={(e) => setClsSubject(e.target.value)}
                   placeholder="VD: Tin học / Toán / Tiếng Anh"
-                  className={`w-full px-3.5 py-2.5 rounded-2xl text-sm border outline-none ${
-                    darkMode
+                  className={`w-full px-3.5 py-2.5 rounded-2xl text-sm border outline-none ${darkMode
                       ? 'bg-zinc-950 border-zinc-800'
                       : 'bg-zinc-50 border-zinc-200'
-                  }`}
+                    }`}
                 />
               </div>
             </div>
@@ -1166,13 +1153,12 @@ export function ClassroomsManagerView({
                     key={t.id}
                     type="button"
                     onClick={() => setClsTheme(t.id)}
-                    className={`px-3 py-1 rounded-full text-xs font-bold border cursor-pointer ${
-                      clsTheme === t.id
+                    className={`px-3 py-1 rounded-full text-xs font-bold border cursor-pointer ${clsTheme === t.id
                         ? 'bg-indigo-600 border-indigo-600 text-white'
                         : darkMode
                           ? 'border-zinc-700 text-zinc-400'
                           : 'border-zinc-200 text-zinc-600'
-                    }`}
+                      }`}
                   >
                     {t.label}
                   </button>
@@ -1208,11 +1194,10 @@ export function ClassroomsManagerView({
                 value={clsStudentsText}
                 onChange={(e) => setClsStudentsText(e.target.value)}
                 placeholder={`Nguyễn Minh Khôi\nTrần Ngọc Bảo Châu\nLê Hoàng Nam...`}
-                className={`w-full p-3.5 rounded-2xl text-sm border outline-none leading-relaxed ${
-                  darkMode
+                className={`w-full p-3.5 rounded-2xl text-sm border outline-none leading-relaxed ${darkMode
                     ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
                     : 'bg-zinc-50 border-zinc-200 text-zinc-900'
-                }`}
+                  }`}
               />
               <div className="text-[11px] text-zinc-500 mt-1">
                 Đang nhập:{' '}
@@ -1249,3 +1234,4 @@ export function ClassroomsManagerView({
     </div>
   );
 }
+

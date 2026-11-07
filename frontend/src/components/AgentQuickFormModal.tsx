@@ -208,17 +208,15 @@ print("Link giao cho Học sinh:", data["public_url"])`;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
       <div
-        className={`w-full max-w-2xl rounded-3xl border overflow-hidden shadow-2xl my-auto ${
-          darkMode
+        className={`w-full max-w-2xl rounded-3xl border overflow-hidden shadow-2xl my-auto ${darkMode
             ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
             : 'bg-white border-zinc-200 text-zinc-900'
-        }`}
+          }`}
       >
         {/* Header */}
         <div
-          className={`px-5 sm:px-6 py-4 border-b flex items-center justify-between ${
-            darkMode ? 'border-zinc-800' : 'border-zinc-200'
-          }`}
+          className={`px-5 sm:px-6 py-4 border-b flex items-center justify-between ${darkMode ? 'border-zinc-800' : 'border-zinc-200'
+            }`}
         >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-emerald-500 text-white flex items-center justify-center shadow-sm shrink-0">
@@ -236,9 +234,8 @@ print("Link giao cho Học sinh:", data["public_url"])`;
 
           <button
             onClick={onClose}
-            className={`p-2 rounded-xl cursor-pointer ${
-              darkMode ? 'hover:bg-zinc-900 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-500'
-            }`}
+            className={`p-2 rounded-xl cursor-pointer ${darkMode ? 'hover:bg-zinc-900 text-zinc-400' : 'hover:bg-zinc-100 text-zinc-500'
+              }`}
           >
             <X className="w-5 h-5" />
           </button>
@@ -246,14 +243,12 @@ print("Link giao cho Học sinh:", data["public_url"])`;
 
         {/* Mode Tabs */}
         <div
-          className={`px-4 sm:px-6 pt-3.5 pb-2 border-b ${
-            darkMode ? 'border-zinc-800/80 bg-zinc-900/40' : 'border-zinc-100 bg-zinc-50/70'
-          }`}
+          className={`px-4 sm:px-6 pt-3.5 pb-2 border-b ${darkMode ? 'border-zinc-800/80 bg-zinc-900/40' : 'border-zinc-100 bg-zinc-50/70'
+            }`}
         >
           <div
-            className={`grid grid-cols-3 p-1 rounded-2xl ${
-              darkMode ? 'bg-zinc-900' : 'bg-zinc-200/70'
-            }`}
+            className={`grid grid-cols-3 p-1 rounded-2xl ${darkMode ? 'bg-zinc-900' : 'bg-zinc-200/70'
+              }`}
           >
             {[
               { id: 'ai_prompt', label: 'AI Soạn Tự Động', icon: Wand2 },
@@ -270,13 +265,12 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                     setError(null);
                     setTab(t.id as typeof tab);
                   }}
-                  className={`py-2 px-2 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    active
+                  className={`py-2 px-2 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${active
                       ? darkMode
                         ? 'bg-zinc-800 text-white shadow-xs'
                         : 'bg-white text-zinc-950 shadow-xs'
                       : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
-                  }`}
+                    }`}
                 >
                   <Icon className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">{t.label}</span>
@@ -303,13 +297,12 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                   setIsQuizMode(true);
                   setCodeInput(SAMPLE_QUIZ_CODE);
                 }}
-                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
-                  isQuizMode
+                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${isQuizMode
                     ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500'
                     : darkMode
                       ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
                       : 'border-zinc-200 bg-zinc-50 text-zinc-600'
-                }`}
+                  }`}
               >
                 <div className="flex items-center gap-2 text-xs font-bold">
                   <GraduationCap className="w-4 h-4 text-indigo-500" />
@@ -326,13 +319,12 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                   setIsQuizMode(false);
                   setCodeInput(SAMPLE_DSL_CODE);
                 }}
-                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
-                  !isQuizMode
+                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${!isQuizMode
                     ? 'border-emerald-500 bg-emerald-500/10 ring-1 ring-emerald-500'
                     : darkMode
                       ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
                       : 'border-zinc-200 bg-zinc-50 text-zinc-600'
-                }`}
+                  }`}
               >
                 <div className="flex items-center gap-2 text-xs font-bold">
                   <ClipboardList className="w-4 h-4 text-emerald-500" />
@@ -354,11 +346,10 @@ print("Link giao cho Học sinh:", data["public_url"])`;
               <select
                 value={selectedClassroomId}
                 onChange={(e) => setSelectedClassroomId(e.target.value)}
-                className={`w-full px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm font-semibold border outline-none ${
-                  darkMode
+                className={`w-full px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm font-semibold border outline-none ${darkMode
                     ? 'bg-zinc-900 border-zinc-800 text-zinc-100'
                     : 'bg-zinc-50 border-zinc-200 text-zinc-900'
-                }`}
+                  }`}
               >
                 <option value="">-- Không gắn lớp cố định --</option>
                 {classrooms.map((cls) => (
@@ -389,11 +380,10 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                       ? 'Ví dụ: Đề kiểm tra 15 phút Tiếng Anh lớp 10 về thì Hiện tại hoàn thành và Từ vựng...'
                       : 'Ví dụ: Khảo sát hài lòng khách hàng quán cà phê...'
                   }
-                  className={`w-full p-3.5 rounded-2xl text-sm border outline-none resize-none ${
-                    darkMode
+                  className={`w-full p-3.5 rounded-2xl text-sm border outline-none resize-none ${darkMode
                       ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500'
                       : 'bg-zinc-50 border-zinc-200 text-zinc-900 focus:bg-white focus:border-indigo-500'
-                  }`}
+                    }`}
                 />
               </div>
 
@@ -403,11 +393,10 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                     key={s}
                     type="button"
                     onClick={() => setPrompt(s)}
-                    className={`text-left text-[11px] px-3 py-1.5 rounded-xl border transition-colors cursor-pointer ${
-                      darkMode
+                    className={`text-left text-[11px] px-3 py-1.5 rounded-xl border transition-colors cursor-pointer ${darkMode
                         ? 'bg-zinc-900 border-zinc-800 hover:border-indigo-500/60 text-zinc-300'
                         : 'bg-zinc-50 border-zinc-200 hover:border-indigo-400 text-zinc-700'
-                    }`}
+                      }`}
                   >
                     + {s}
                   </button>
@@ -425,13 +414,12 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                         key={n}
                         type="button"
                         onClick={() => setQuestionCount(n)}
-                        className={`flex-1 py-2 rounded-xl text-xs font-bold border cursor-pointer ${
-                          questionCount === n
+                        className={`flex-1 py-2 rounded-xl text-xs font-bold border cursor-pointer ${questionCount === n
                             ? 'bg-indigo-600 border-indigo-600 text-white'
                             : darkMode
                               ? 'bg-zinc-900 border-zinc-800 text-zinc-300'
                               : 'bg-zinc-50 border-zinc-200 text-zinc-700'
-                        }`}
+                          }`}
                       >
                         {n} câu
                       </button>
@@ -449,11 +437,10 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                         key={th.id}
                         type="button"
                         onClick={() => setThemeColor(th.id)}
-                        className={`w-6 h-6 rounded-full ${th.dot} cursor-pointer ${
-                          themeColor === th.id
+                        className={`w-6 h-6 rounded-full ${th.dot} cursor-pointer ${themeColor === th.id
                             ? 'ring-2 ring-offset-2 ring-indigo-500 dark:ring-offset-zinc-950 scale-110'
                             : 'opacity-70'
-                        }`}
+                          }`}
                       />
                     ))}
                   </div>
@@ -545,9 +532,8 @@ print("Link giao cho Học sinh:", data["public_url"])`;
           {tab === 'agent_api' && (
             <div className="space-y-4">
               <div
-                className={`p-4 rounded-2xl border ${
-                  darkMode ? 'bg-zinc-900/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
-                }`}
+                className={`p-4 rounded-2xl border ${darkMode ? 'bg-zinc-900/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
+                  }`}
               >
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-xs font-bold inline-flex items-center gap-1.5">
@@ -570,11 +556,10 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                     type="text"
                     readOnly
                     value={agentKey}
-                    className={`flex-1 px-3 py-2 rounded-xl font-mono text-xs border outline-none ${
-                      darkMode
+                    className={`flex-1 px-3 py-2 rounded-xl font-mono text-xs border outline-none ${darkMode
                         ? 'bg-zinc-950 border-zinc-800 text-amber-300'
                         : 'bg-white border-zinc-200 text-zinc-900'
-                    }`}
+                      }`}
                   />
                   <button
                     type="button"
