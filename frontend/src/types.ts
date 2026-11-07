@@ -1,26 +1,96 @@
-export interface Voice {
+export type QuestionType =
+  | 'short_text'
+  | 'long_text'
+  | 'single_choice'
+  | 'multiple_choice'
+  | 'dropdown'
+  | 'rating'
+  | 'date'
+  | 'email';
+
+export type ThemeColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'zinc';
+
+export interface Question {
   id: string;
-  name: string;
-  native_name: string;
-  language: string;
-  language_label: string;
-  flag: string;
-  gender: 'Female' | 'Male' | string;
-  gender_label: string;
-  style: string;
+  type: QuestionType;
+  title: string;
   description: string;
-  tags: string[];
-  gradient: string;
-  featured: boolean;
-  engine?: string;
-  sample_text: string;
+  required: boolean;
+  options: string[];
+  max_rating?: number;
 }
 
-export interface UserStats {
-  total_generations: number;
-  total_chars: number;
-  total_seconds: number;
-  total_favorites: number;
+export interface SurveyForm {
+  id: string;
+  user_id?: string | null;
+  slug: string;
+  access_code: string;
+  title: string;
+  description: string;
+  theme_color: ThemeColor | string;
+  thank_you_message: string;
+  is_published: boolean;
+  accepting_responses: boolean;
+  collect_email: boolean;
+  allow_public_summary: boolean;
+  questions: Question[];
+  views_count: number;
+  response_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SurveyTemplate {
+  id: string;
+  name: string;
+  category: string;
+  theme_color: ThemeColor | string;
+  title: string;
+  description: string;
+  thank_you_message: string;
+  questions: Question[];
+}
+
+export interface FormResponseItem {
+  id: string;
+  form_id: string;
+  respondent_name: string | null;
+  respondent_email: string | null;
+  answers: Record<string, unknown>;
+  submitted_at: string;
+}
+
+export interface DistributionBar {
+  label: string;
+  count: number;
+  percent: number;
+}
+
+export interface QuestionStat {
+  question_id: string;
+  title: string;
+  type: QuestionType | string;
+  answered_count: number;
+  distribution?: DistributionBar[];
+  average_rating?: number;
+  max_rating?: number;
+  text_answers?: string[];
+}
+
+export interface FormAnalytics {
+  form: SurveyForm;
+  total_responses: number;
+  views_count: number;
+  completion_rate: number;
+  question_stats: QuestionStat[];
+  responses: FormResponseItem[];
+}
+
+export interface ServerInfo {
+  lan_ip: string;
+  local_url: string;
+  lan_url: string;
+  public_tunnel_url: string | null;
 }
 
 export interface AuthUser {
@@ -31,42 +101,4 @@ export interface AuthUser {
   plan: string;
   created_at: string;
   last_login_at: string | null;
-  stats?: UserStats;
-  api_keys?: Record<string, string>;
 }
-
-export interface GenerationItem {
-  id: string;
-  user_id?: string | null;
-  title: string;
-  text: string;
-  voice_id: string;
-  voice_name: string;
-  language: string;
-  gender: string;
-  speed: number;
-  pitch: number;
-  volume: number;
-  audio_filename: string;
-  srt_filename: string | null;
-  audio_url: string;
-  srt_url: string | null;
-  char_count: number;
-  file_size: number;
-  duration_est: number;
-  is_favorite: boolean;
-  created_at: string;
-}
-
-export interface ScriptTemplate {
-  id: string;
-  title: string;
-  language: string;
-  voice_id: string;
-  category: string;
-  text: string;
-}
-
-export type AppView = 'landing' | 'studio';
-export type NavSection = 'home' | 'tts' | 'voices' | 'history' | 'templates';
-export type RightTab = 'settings' | 'history';

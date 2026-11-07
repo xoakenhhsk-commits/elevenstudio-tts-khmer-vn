@@ -1,29 +1,27 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+import json
 import random
+import secrets
 import sqlite3
+import string
 import uuid
 
 from auth import generate_session_token, hash_password, verify_password
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-AUDIO_DIR = BASE_DIR / "generated_audio"
-PREVIEW_DIR = AUDIO_DIR / "previews"
-
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = DATA_DIR / "kromalabs.db"
+DB_PATH = DATA_DIR / "kromaforms.db"
 
 AVATAR_GRADIENTS = [
+    "from-zinc-800 via-zinc-700 to-zinc-900",
+    "from-emerald-500 via-teal-500 to-cyan-600",
     "from-indigo-500 via-purple-500 to-pink-500",
-    "from-emerald-400 via-teal-500 to-cyan-600",
-    "from-amber-400 via-orange-500 to-rose-500",
-    "from-sky-400 via-blue-500 to-indigo-600",
-    "from-violet-500 via-fuchsia-500 to-rose-500",
+    "from-amber-500 via-orange-500 to-rose-500",
+    "from-sky-500 via-blue-600 to-indigo-700",
 ]
 
 
@@ -32,6 +30,23 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _generate_short_code() -> str:
+    chars = string.ascii_uppercase + string.digits
+    return "KF-" + "".join(secrets.choice(chars) for _ in range(5))
+
+
+def _generate_slug(title: str) -> str:
+    import re
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFKD", title.lower())
+    ascii_str = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_str = ascii_str.replace("đ", "d")
+    slug_base = re.sub(r"[^a-z0-9]+", "-", ascii_str).strip("-")[:36] or "khao-sat"
+    suffix = uuid.uuid4().hex[:6]
+    return f"{slug_base}-{suffix}"
 
 
 def init_db() -> None:
@@ -44,7 +59,7 @@ def init_db() -> None:
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 avatar_gradient TEXT NOT NULL,
-                plan TEXT NOT NULL DEFAULT 'Creator Free',
+                plan TEXT NOT NULL DEFAULT 'Pro Free',
                 created_at TEXT NOT NULL,
                 last_login_at TEXT
             )
@@ -65,55 +80,38 @@ def init_db() -> None:
 
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS generations (
+            CREATE TABLE IF NOT EXISTS forms (
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
+                slug TEXT NOT NULL UNIQUE,
+                access_code TEXT NOT NULL UNIQUE,
                 title TEXT NOT NULL,
-                text TEXT NOT NULL,
-                voice_id TEXT NOT NULL,
-                voice_name TEXT NOT NULL,
-                language TEXT NOT NULL,
-                gender TEXT NOT NULL,
-                speed REAL NOT NULL DEFAULT 1.0,
-                pitch INTEGER NOT NULL DEFAULT 0,
-                volume INTEGER NOT NULL DEFAULT 0,
-                audio_filename TEXT NOT NULL,
-                srt_filename TEXT,
-                char_count INTEGER NOT NULL DEFAULT 0,
-                file_size INTEGER NOT NULL DEFAULT 0,
-                duration_est REAL NOT NULL DEFAULT 0.0,
-                is_favorite INTEGER NOT NULL DEFAULT 0,
+                description TEXT NOT NULL DEFAULT '',
+                theme_color TEXT NOT NULL DEFAULT 'indigo',
+                thank_you_message TEXT NOT NULL DEFAULT 'Cảm ơn bạn đã dành thời gian hoàn thành khảo sát!',
+                is_published INTEGER NOT NULL DEFAULT 1,
+                accepting_responses INTEGER NOT NULL DEFAULT 1,
+                collect_email INTEGER NOT NULL DEFAULT 0,
+                allow_public_summary INTEGER NOT NULL DEFAULT 1,
+                questions_json TEXT NOT NULL DEFAULT '[]',
+                views_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )
             """
         )
 
-        # Ensure backward compatibility if table existed without user_id
-        cols = [r["name"] for r in conn.execute("PRAGMA table_info(generations)").fetchall()]
-        if "user_id" not in cols:
-            conn.execute("ALTER TABLE generations ADD COLUMN user_id TEXT")
-
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS user_api_keys (
+            CREATE TABLE IF NOT EXISTS form_responses (
                 id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(user_id, provider),
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS system_api_keys (
-                provider TEXT PRIMARY KEY,
-                api_key TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                form_id TEXT NOT NULL,
+                respondent_name TEXT,
+                respondent_email TEXT,
+                answers_json TEXT NOT NULL DEFAULT '{}',
+                submitted_at TEXT NOT NULL,
+                FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE
             )
             """
         )
@@ -121,75 +119,13 @@ def init_db() -> None:
         conn.commit()
 
 
-# ==================== API KEY FUNCTIONS ====================
+# ==================== USER & AUTH ====================
 
-def save_user_api_key(user_id: str, provider: str, api_key: str) -> None:
-    now_iso = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO user_api_keys (id, user_id, provider, api_key, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, provider) DO UPDATE SET
-                api_key = excluded.api_key,
-                updated_at = excluded.updated_at
-            """,
-            (f"key_{uuid.uuid4().hex[:12]}", user_id, provider.lower().strip(), api_key.strip(), now_iso),
-        )
-        conn.commit()
+def _sanitize_user(user: dict[str, Any]) -> dict[str, Any]:
+    out = dict(user)
+    out.pop("password_hash", None)
+    return out
 
-
-def get_api_key(provider: str, user_id: str | None = None) -> str | None:
-    provider_clean = provider.lower().strip()
-    with get_connection() as conn:
-        if user_id:
-            row = conn.execute(
-                "SELECT api_key FROM user_api_keys WHERE user_id = ? AND provider = ?",
-                (user_id, provider_clean),
-            ).fetchone()
-            if row and row["api_key"]:
-                return row["api_key"]
-
-        row = conn.execute(
-            "SELECT api_key FROM system_api_keys WHERE provider = ?",
-            (provider_clean,),
-        ).fetchone()
-        if row and row["api_key"]:
-            return row["api_key"]
-    return None
-
-
-def list_user_api_keys(user_id: str) -> dict[str, str]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT provider, api_key FROM user_api_keys WHERE user_id = ?",
-            (user_id,),
-        ).fetchall()
-        result: dict[str, str] = {}
-        for r in rows:
-            k = r["api_key"]
-            masked = (k[:4] + "••••••••" + k[-4:]) if len(k) > 8 else "••••••••"
-            result[r["provider"]] = masked
-        return result
-
-
-def save_system_api_key(provider: str, api_key: str) -> None:
-    now_iso = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO system_api_keys (provider, api_key, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(provider) DO UPDATE SET
-                api_key = excluded.api_key,
-                updated_at = excluded.updated_at
-            """,
-            (provider.lower().strip(), api_key.strip(), now_iso),
-        )
-        conn.commit()
-
-
-# ==================== USER & SESSION FUNCTIONS ====================
 
 def create_user(full_name: str, email: str, password: str) -> dict[str, Any]:
     normalized_email = email.strip().lower()
@@ -200,16 +136,15 @@ def create_user(full_name: str, email: str, password: str) -> dict[str, Any]:
 
     with get_connection() as conn:
         existing = conn.execute(
-            "SELECT id FROM users WHERE email = ?",
-            (normalized_email,),
+            "SELECT id FROM users WHERE email = ?", (normalized_email,)
         ).fetchone()
         if existing:
-            raise ValueError("Email này đã được đăng ký. Vui lòng đăng nhập hoặc dùng email khác.")
+            raise ValueError("Email này đã được đăng ký. Vui lòng đăng nhập.")
 
         conn.execute(
             """
             INSERT INTO users (id, full_name, email, password_hash, avatar_gradient, plan, created_at, last_login_at)
-            VALUES (?, ?, ?, ?, ?, 'Creator Free', ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'Pro Free', ?, ?)
             """,
             (user_id, full_name.strip(), normalized_email, pw_hash, avatar, now_iso, now_iso),
         )
@@ -222,8 +157,7 @@ def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
     normalized_email = email.strip().lower()
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT * FROM users WHERE email = ?",
-            (normalized_email,),
+            "SELECT * FROM users WHERE email = ?", (normalized_email,)
         ).fetchone()
         if not row:
             return None
@@ -279,114 +213,229 @@ def delete_session(token: str) -> None:
         conn.commit()
 
 
-def get_user_stats(user_id: str) -> dict[str, Any]:
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT
-                COUNT(*) AS total_generations,
-                COALESCE(SUM(char_count), 0) AS total_chars,
-                COALESCE(SUM(duration_est), 0) AS total_seconds,
-                COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0) AS total_favorites
-            FROM generations
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
-        return dict(row) if row else {
-            "total_generations": 0,
-            "total_chars": 0,
-            "total_seconds": 0,
-            "total_favorites": 0,
-        }
+# ==================== FORMS CRUD ====================
+
+def _parse_form_row(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
+    d = dict(row)
+    d["questions"] = json.loads(d.pop("questions_json", "[]"))
+    d["is_published"] = bool(d["is_published"])
+    d["accepting_responses"] = bool(d["accepting_responses"])
+    d["collect_email"] = bool(d["collect_email"])
+    d["allow_public_summary"] = bool(d["allow_public_summary"])
+    count_row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM form_responses WHERE form_id = ?",
+        (d["id"],),
+    ).fetchone()
+    d["response_count"] = count_row["cnt"] if count_row else 0
+    return d
 
 
-def _sanitize_user(user: dict[str, Any]) -> dict[str, Any]:
-    out = dict(user)
-    out.pop("password_hash", None)
-    return out
+def create_form(data: dict[str, Any], user_id: str | None = None) -> dict[str, Any]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    form_id = f"frm_{uuid.uuid4().hex[:12]}"
+    title = (data.get("title") or "Biểu mẫu chưa có tiêu đề").strip()
+    slug = _generate_slug(title)
+    access_code = _generate_short_code()
+    questions = data.get("questions") or []
 
-
-# ==================== GENERATION HISTORY FUNCTIONS ====================
-
-def insert_generation(record: dict[str, Any]) -> dict[str, Any]:
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO generations (
-                id, user_id, title, text, voice_id, voice_name, language, gender,
-                speed, pitch, volume, audio_filename, srt_filename,
-                char_count, file_size, duration_est, is_favorite, created_at
-            ) VALUES (
-                :id, :user_id, :title, :text, :voice_id, :voice_name, :language, :gender,
-                :speed, :pitch, :volume, :audio_filename, :srt_filename,
-                :char_count, :file_size, :duration_est, :is_favorite, :created_at
-            )
+            INSERT INTO forms (
+                id, user_id, slug, access_code, title, description,
+                theme_color, thank_you_message, is_published, accepting_responses,
+                collect_email, allow_public_summary, questions_json, views_count,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
-            record,
+            (
+                form_id,
+                user_id,
+                slug,
+                access_code,
+                title,
+                data.get("description", ""),
+                data.get("theme_color", "indigo"),
+                data.get(
+                    "thank_you_message",
+                    "Cảm ơn bạn đã dành thời gian hoàn thành khảo sát!",
+                ),
+                1 if data.get("is_published", True) else 0,
+                1 if data.get("accepting_responses", True) else 0,
+                1 if data.get("collect_email", False) else 0,
+                1 if data.get("allow_public_summary", True) else 0,
+                json.dumps(questions, ensure_ascii=False),
+                now_iso,
+                now_iso,
+            ),
         )
         conn.commit()
-    return record
+        row = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
+        return _parse_form_row(row, conn)
 
 
-def list_generations(user_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def update_form(form_id: str, updates: dict[str, Any], user_id: str | None = None) -> dict[str, Any] | None:
+    now_iso = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
-        if user_id:
+        existing = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
+        if not existing:
+            return None
+        if existing["user_id"] and user_id != existing["user_id"]:
+            raise PermissionError("Bạn không có quyền chỉnh sửa biểu mẫu này.")
+
+        current = _parse_form_row(existing, conn)
+        title = updates.get("title", current["title"])
+        description = updates.get("description", current["description"])
+        theme_color = updates.get("theme_color", current["theme_color"])
+        thank_you_message = updates.get("thank_you_message", current["thank_you_message"])
+        is_published = 1 if updates.get("is_published", current["is_published"]) else 0
+        accepting_responses = 1 if updates.get("accepting_responses", current["accepting_responses"]) else 0
+        collect_email = 1 if updates.get("collect_email", current["collect_email"]) else 0
+        allow_public_summary = 1 if updates.get("allow_public_summary", current["allow_public_summary"]) else 0
+        questions = updates.get("questions", current["questions"])
+
+        # Claim guest form if user logs in and edits it
+        new_owner = existing["user_id"] or user_id
+
+        conn.execute(
+            """
+            UPDATE forms
+            SET user_id = ?, title = ?, description = ?, theme_color = ?,
+                thank_you_message = ?, is_published = ?, accepting_responses = ?,
+                collect_email = ?, allow_public_summary = ?, questions_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_owner,
+                title,
+                description,
+                theme_color,
+                thank_you_message,
+                is_published,
+                accepting_responses,
+                collect_email,
+                allow_public_summary,
+                json.dumps(questions, ensure_ascii=False),
+                now_iso,
+                form_id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
+        return _parse_form_row(row, conn)
+
+
+def get_form_by_id(form_id: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
+        return _parse_form_row(row, conn) if row else None
+
+
+def get_form_by_slug_or_code(identifier: str, increment_view: bool = False) -> dict[str, Any] | None:
+    ident = identifier.strip()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM forms WHERE slug = ? OR UPPER(access_code) = UPPER(?) OR id = ?",
+            (ident, ident, ident),
+        ).fetchone()
+        if not row:
+            return None
+        if increment_view:
+            conn.execute(
+                "UPDATE forms SET views_count = views_count + 1 WHERE id = ?",
+                (row["id"],),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM forms WHERE id = ?", (row["id"],)).fetchone()
+        return _parse_form_row(row, conn)
+
+
+def list_forms(user_id: str | None = None, public_only: bool = False) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        if public_only:
             rows = conn.execute(
-                "SELECT * FROM generations WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-                (user_id, limit),
+                "SELECT * FROM forms WHERE is_published = 1 ORDER BY updated_at DESC LIMIT 50"
+            ).fetchall()
+        elif user_id:
+            rows = conn.execute(
+                "SELECT * FROM forms WHERE user_id = ? ORDER BY updated_at DESC LIMIT 100",
+                (user_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM generations WHERE user_id IS NULL ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM forms WHERE user_id IS NULL ORDER BY updated_at DESC LIMIT 50"
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [_parse_form_row(r, conn) for r in rows]
 
 
-def get_generation(item_id: str) -> dict[str, Any] | None:
+def delete_form(form_id: str, user_id: str | None = None) -> bool:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM generations WHERE id = ?",
-            (item_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def toggle_favorite(item_id: str, user_id: str | None = None) -> dict[str, Any] | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM generations WHERE id = ?",
-            (item_id,),
-        ).fetchone()
+        row = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
         if not row:
-            return None
-        if user_id and row["user_id"] and row["user_id"] != user_id:
-            return None
-        new_val = 0 if row["is_favorite"] else 1
+            return False
+        if row["user_id"] and row["user_id"] != user_id:
+            raise PermissionError("Bạn không có quyền xóa biểu mẫu này.")
+        conn.execute("DELETE FROM forms WHERE id = ?", (form_id,))
+        conn.commit()
+        return True
+
+
+# ==================== RESPONSES & ANALYTICS ====================
+
+def submit_response(
+    form_id: str,
+    answers: dict[str, Any],
+    respondent_name: str | None = None,
+    respondent_email: str | None = None,
+) -> dict[str, Any]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    resp_id = f"rsp_{uuid.uuid4().hex[:12]}"
+    with get_connection() as conn:
         conn.execute(
-            "UPDATE generations SET is_favorite = ? WHERE id = ?",
-            (new_val, item_id),
+            """
+            INSERT INTO form_responses (id, form_id, respondent_name, respondent_email, answers_json, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                resp_id,
+                form_id,
+                (respondent_name or "").strip() or None,
+                (respondent_email or "").strip() or None,
+                json.dumps(answers, ensure_ascii=False),
+                now_iso,
+            ),
         )
         conn.commit()
-        updated = conn.execute(
-            "SELECT * FROM generations WHERE id = ?",
-            (item_id,),
-        ).fetchone()
-        return dict(updated) if updated else None
+    return {
+        "id": resp_id,
+        "form_id": form_id,
+        "respondent_name": respondent_name,
+        "respondent_email": respondent_email,
+        "answers": answers,
+        "submitted_at": now_iso,
+    }
 
 
-def delete_generation(item_id: str, user_id: str | None = None) -> dict[str, Any] | None:
+def list_responses(form_id: str) -> list[dict[str, Any]]:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM generations WHERE id = ?",
-            (item_id,),
-        ).fetchone()
-        if not row:
-            return None
-        if user_id and row["user_id"] and row["user_id"] != user_id:
-            return None
-        record = dict(row)
-        conn.execute("DELETE FROM generations WHERE id = ?", (item_id,))
+        rows = conn.execute(
+            "SELECT * FROM form_responses WHERE form_id = ? ORDER BY submitted_at DESC",
+            (form_id,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["answers"] = json.loads(d.pop("answers_json", "{}"))
+            out.append(d)
+        return out
+
+
+def delete_response(response_id: str, form_id: str) -> bool:
+    with get_connection() as conn:
+        cur = conn.execute(
+            "DELETE FROM form_responses WHERE id = ? AND form_id = ?",
+            (response_id, form_id),
+        )
         conn.commit()
-        return record
+        return cur.rowcount > 0

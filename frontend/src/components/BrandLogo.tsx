@@ -23,12 +23,9 @@ export function BrandLogo({
         onClick ? 'cursor-pointer group' : ''
       }`}
     >
-      {/* Unique KromaLabs Geometric Acoustic Monogram (inspired by ElevenLabs minimalism, uniquely 3-bar harmonic resonance) */}
       <div
         className={`${boxSize} rounded-xl flex items-center justify-center shadow-xs transition-transform group-hover:scale-[1.03] ${
-          darkMode
-            ? 'bg-white text-zinc-950'
-            : 'bg-zinc-950 text-white'
+          darkMode ? 'bg-white text-zinc-950' : 'bg-zinc-950 text-white'
         }`}
       >
         <svg
@@ -37,19 +34,16 @@ export function BrandLogo({
           className="w-[68%] h-[68%]"
           xmlns="http://www.w3.org/2000/svg"
         >
-          {/* Left full pillar */}
-          <rect x="4.5" y="4.5" width="3.8" height="19" rx="1.9" fill="currentColor" />
-          {/* Middle harmonic dot + lower resonance bar */}
-          <circle cx="14" cy="6.6" r="2.1" className="fill-emerald-500" />
-          <rect x="12.1" y="10.8" width="3.8" height="12.7" rx="1.9" fill="currentColor" />
-          {/* Right stepped acoustic bar */}
-          <rect x="19.7" y="7" width="3.8" height="14" rx="1.9" fill="currentColor" />
+          <rect x="4" y="6" width="14" height="3.6" rx="1.8" fill="currentColor" />
+          <circle cx="22" cy="7.8" r="2.1" className="fill-emerald-500" />
+          <rect x="4" y="12.2" width="20" height="3.6" rx="1.8" fill="currentColor" />
+          <rect x="4" y="18.4" width="11" height="3.6" rx="1.8" fill="currentColor" />
         </svg>
       </div>
 
       <div>
         <div className={`font-display font-bold tracking-tight leading-none ${textSize}`}>
-          Kroma<span className="font-medium opacity-75">Labs</span>
+          Kroma<span className="font-medium opacity-75">Forms</span>
         </div>
         {showTagline && (
           <div
@@ -57,11 +51,10 @@ export function BrandLogo({
               darkMode ? 'text-zinc-400' : 'text-zinc-500'
             }`}
           >
-            Khmer • VN Voice AI
+            Public Survey Studio
           </div>
         )}
       </div>
     </div>
   );
 }
-

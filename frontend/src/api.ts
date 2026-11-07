@@ -1,10 +1,13 @@
-import type { AuthUser, GenerationItem, ScriptTemplate, Voice } from './types';
+import type {
+  AuthUser,
+  FormAnalytics,
+  ServerInfo,
+  SurveyForm,
+  SurveyTemplate,
+} from './types';
 
-const TOKEN_STORAGE_KEY = 'kromalabs_auth_token';
-
-// Smart backend URL resolution: works via Vite proxy (/api), direct FastAPI (:8000), or fallback direct URL
+const TOKEN_STORAGE_KEY = 'kromaforms_auth_token';
 let resolvedBaseUrl = '';
-
 const FALLBACK_CANDIDATES = ['', 'http://127.0.0.1:8000', 'http://localhost:8000'];
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -17,7 +20,6 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   for (const base of candidates) {
     try {
       const res = await fetch(`${base}${path}`, init);
-      // Vite proxy returns 500/502/504 with empty/text error when backend port 8000 is down
       if (base === '' && (res.status === 502 || res.status === 504)) {
         continue;
       }
@@ -29,27 +31,9 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   }
 
   if (lastError instanceof TypeError) {
-    throw new Error(
-      'Không thể kết nối máy chủ Backend (cổng 8000). Vui lòng đảm bảo Backend đang chạy!'
-    );
+    throw new Error('Không thể kết nối máy chủ Backend (cổng 8000).');
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Lỗi kết nối tới máy chủ KromaLabs API');
-}
-
-export function resolveMediaUrl(url: string | null | undefined): string {
-  if (!url) return '';
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  return `${resolvedBaseUrl}${url}`;
-}
-
-function normalizeGeneration(item: GenerationItem): GenerationItem {
-  return {
-    ...item,
-    audio_url: resolveMediaUrl(item.audio_url),
-    srt_url: item.srt_url ? resolveMediaUrl(item.srt_url) : null,
-  };
+  throw lastError instanceof Error ? lastError : new Error('Lỗi kết nối API');
 }
 
 export function getStoredToken(): string | null {
@@ -73,41 +57,48 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
-// ==================== AUTH API ====================
+// ==================== SYSTEM & AUTH ====================
 
-export interface AuthResponse {
-  token: string;
-  user: AuthUser;
+export async function fetchServerInfo(): Promise<ServerInfo> {
+  const res = await apiFetch('/api/server-info');
+  if (!res.ok) {
+    return {
+      lan_ip: '127.0.0.1',
+      local_url: window.location.origin,
+      lan_url: window.location.origin,
+      public_tunnel_url: null,
+    };
+  }
+  return res.json();
 }
 
 export async function registerUser(
   full_name: string,
   email: string,
   password: string
-): Promise<AuthResponse> {
+): Promise<{ token: string; user: AuthUser }> {
   const res = await apiFetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ full_name, email, password }),
   });
   const data = await res.json().catch(() => ({ detail: 'Lỗi đăng ký tài khoản' }));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Không thể đăng ký tài khoản');
-  }
+  if (!res.ok) throw new Error(data.detail || 'Không thể đăng ký tài khoản');
   setStoredToken(data.token);
   return data;
 }
 
-export async function loginUser(email: string, password: string): Promise<AuthResponse> {
+export async function loginUser(
+  email: string,
+  password: string
+): Promise<{ token: string; user: AuthUser }> {
   const res = await apiFetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
   const data = await res.json().catch(() => ({ detail: 'Lỗi đăng nhập' }));
-  if (!res.ok) {
-    throw new Error(data.detail || 'Email hoặc mật khẩu không đúng');
-  }
+  if (!res.ok) throw new Error(data.detail || 'Email hoặc mật khẩu không đúng');
   setStoredToken(data.token);
   return data;
 }
@@ -124,12 +115,9 @@ export async function logoutUser(): Promise<void> {
 }
 
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
-  const token = getStoredToken();
-  if (!token) return null;
+  if (!getStoredToken()) return null;
   try {
-    const res = await apiFetch('/api/auth/me', {
-      headers: authHeaders(),
-    });
+    const res = await apiFetch('/api/auth/me', { headers: authHeaders() });
     if (!res.ok) {
       setStoredToken(null);
       return null;
@@ -141,96 +129,127 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
   }
 }
 
-export async function saveUserApiKey(provider: string, apiKey: string): Promise<Record<string, string>> {
-  const res = await apiFetch('/api/auth/api-keys', {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ provider, api_key: apiKey }),
-  });
-  if (!res.ok) throw new Error('Không thể lưu API Key');
-  const data = await res.json();
-  return data.api_keys;
-}
+// ==================== TEMPLATES & FORMS ====================
 
-// ==================== TTS & CATALOG API ====================
-
-export async function fetchVoices(includeAll = false): Promise<Voice[]> {
-  const res = await apiFetch(`/api/voices?include_all=${includeAll}`);
-  if (!res.ok) throw new Error('Không thể tải danh sách giọng đọc');
-  const data = await res.json();
-  return data.voices;
-}
-
-export async function fetchTemplates(): Promise<ScriptTemplate[]> {
+export async function fetchSurveyTemplates(): Promise<SurveyTemplate[]> {
   const res = await apiFetch('/api/templates');
-  if (!res.ok) throw new Error('Không thể tải mẫu kịch bản');
+  if (!res.ok) throw new Error('Không thể tải kho mẫu khảo sát');
   const data = await res.json();
   return data.templates;
 }
 
-export async function fetchHistory(): Promise<GenerationItem[]> {
-  const res = await apiFetch('/api/history', {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error('Không thể tải lịch sử giọng nói');
+export async function fetchMyForms(): Promise<SurveyForm[]> {
+  const res = await apiFetch('/api/forms', { headers: authHeaders() });
+  if (!res.ok) throw new Error('Không thể tải danh sách biểu mẫu');
   const data = await res.json();
-  return (data.items || []).map(normalizeGeneration);
+  return data.forms;
 }
 
-export interface GeneratePayload {
-  text: string;
-  voice_id: string;
-  speed: number;
-  pitch: number;
-  volume: number;
-  title?: string;
-  include_srt: boolean;
+export async function fetchPublicFeed(): Promise<SurveyForm[]> {
+  const res = await apiFetch('/api/forms/public-feed');
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.forms;
 }
 
-export async function generateSpeech(payload: GeneratePayload): Promise<GenerationItem> {
-  const res = await apiFetch('/api/tts/generate', {
+export async function createSurveyForm(
+  payload: Partial<SurveyForm>
+): Promise<SurveyForm> {
+  const res = await apiFetch('/api/forms', {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Lỗi kết nối máy chủ TTS' }));
-    throw new Error(err.detail || 'Lỗi khi tạo giọng nói');
-  }
-  const item: GenerationItem = await res.json();
-  return normalizeGeneration(item);
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tạo biểu mẫu' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tạo biểu mẫu');
+  return data;
 }
 
-export async function previewVoice(voiceId: string): Promise<string> {
-  const res = await apiFetch(`/api/voices/${encodeURIComponent(voiceId)}/preview`, {
-    method: 'POST',
+export async function updateSurveyForm(
+  formId: string,
+  payload: Partial<SurveyForm>
+): Promise<SurveyForm> {
+  const res = await apiFetch(`/api/forms/${formId}`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Không thể phát mẫu thử' }));
-    throw new Error(err.detail || 'Không thể phát mẫu thử');
-  }
-  const data = await res.json();
-  return resolveMediaUrl(data.preview_url);
+  const data = await res.json().catch(() => ({ detail: 'Lỗi lưu biểu mẫu' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể lưu biểu mẫu');
+  return data;
 }
 
-export async function toggleFavoriteItem(id: string): Promise<GenerationItem> {
-  const res = await apiFetch(`/api/history/${id}/favorite`, {
-    method: 'PATCH',
+export async function duplicateSurveyForm(formId: string): Promise<SurveyForm> {
+  const res = await apiFetch(`/api/forms/${formId}/duplicate`, {
+    method: 'POST',
     headers: authHeaders(),
   });
-  if (!res.ok) throw new Error('Không thể cập nhật mục yêu thích');
-  const item: GenerationItem = await res.json();
-  return normalizeGeneration(item);
+  if (!res.ok) throw new Error('Không thể nhân bản biểu mẫu');
+  return res.json();
 }
 
-export async function deleteHistoryItem(id: string): Promise<void> {
-  const res = await apiFetch(`/api/history/${id}`, {
+export async function deleteSurveyForm(formId: string): Promise<void> {
+  const res = await apiFetch(`/api/forms/${formId}`, {
     method: 'DELETE',
     headers: authHeaders(),
   });
-  if (!res.ok) throw new Error('Không thể xóa bản ghi');
+  if (!res.ok) throw new Error('Không thể xóa biểu mẫu');
 }
 
-export function getDownloadUrl(id: string, type: 'mp3' | 'srt'): string {
-  return resolveMediaUrl(`/api/download/${id}/${type}`);
+// ==================== PUBLIC SURVEY & ANALYTICS ====================
+
+export async function fetchPublicSurvey(identifier: string): Promise<SurveyForm> {
+  const res = await apiFetch(`/api/public/forms/${encodeURIComponent(identifier)}`);
+  const data = await res.json().catch(() => ({ detail: 'Không tìm thấy khảo sát' }));
+  if (!res.ok) throw new Error(data.detail || 'Biểu mẫu không tồn tại hoặc đã đóng');
+  return data;
+}
+
+export async function submitPublicSurvey(
+  identifier: string,
+  payload: {
+    respondent_name?: string;
+    respondent_email?: string;
+    answers: Record<string, unknown>;
+  }
+): Promise<{
+  submitted: boolean;
+  thank_you_message: string;
+  allow_public_summary: boolean;
+}> {
+  const res = await apiFetch(
+    `/api/public/forms/${encodeURIComponent(identifier)}/submit`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  const data = await res.json().catch(() => ({ detail: 'Lỗi gửi câu trả lời' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể gửi khảo sát');
+  return data;
+}
+
+export async function fetchFormAnalytics(identifier: string): Promise<FormAnalytics> {
+  const res = await apiFetch(`/api/forms/${encodeURIComponent(identifier)}/analytics`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tải thống kê' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tải dữ liệu thống kê');
+  return data;
+}
+
+export async function deleteResponseItem(
+  formId: string,
+  responseId: string
+): Promise<void> {
+  const res = await apiFetch(`/api/forms/${formId}/responses/${responseId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Không thể xóa phản hồi');
+}
+
+export function getCsvExportUrl(formId: string): string {
+  return `${resolvedBaseUrl}/api/forms/${formId}/export.csv`;
 }

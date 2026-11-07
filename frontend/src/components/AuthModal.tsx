@@ -40,11 +40,6 @@ export function AuthModal({
 
   if (!open) return null;
 
-  const switchMode = (nextMode: 'login' | 'register') => {
-    setMode(nextMode);
-    setError(null);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -71,7 +66,7 @@ export function AuthModal({
       onSuccess(res.user);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Đã xảy ra lỗi xác thực');
+      setError(err instanceof Error ? err.message : 'Lỗi xác thực tài khoản');
     } finally {
       setLoading(false);
     }
@@ -98,16 +93,15 @@ export function AuthModal({
         <div className="mb-6">
           <BrandLogo darkMode={darkMode} size="md" />
           <h2 className="font-display text-2xl font-bold mt-5">
-            {mode === 'login' ? 'Chào mừng trở lại' : 'Tạo tài khoản KromaLabs'}
+            {mode === 'login' ? 'Đăng nhập KromaForms' : 'Tạo tài khoản KromaForms'}
           </h2>
           <p className={`text-xs mt-1.5 ${darkMode ? 'text-zinc-400' : 'text-zinc-500'}`}>
             {mode === 'login'
-              ? 'Đăng nhập để đồng bộ lịch sử giọng đọc Khmer & Việt Nam của bạn.'
-              : 'Miễn phí trọn đời • Lưu trữ lịch sử âm thanh & phụ đề vào Database riêng.'}
+              ? 'Quản lý biểu mẫu khảo sát, link Public và báo cáo dữ liệu thời gian thực.'
+              : 'Miễn phí không giới hạn số lượng biểu mẫu và câu trả lời khảo sát.'}
           </p>
         </div>
 
-        {/* Mode Switch Tabs */}
         <div
           className={`grid grid-cols-2 p-1 rounded-2xl mb-5 ${
             darkMode ? 'bg-zinc-900' : 'bg-zinc-100'
@@ -115,7 +109,10 @@ export function AuthModal({
         >
           <button
             type="button"
-            onClick={() => switchMode('login')}
+            onClick={() => {
+              setMode('login');
+              setError(null);
+            }}
             className={`py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               mode === 'login'
                 ? darkMode
@@ -130,7 +127,10 @@ export function AuthModal({
           </button>
           <button
             type="button"
-            onClick={() => switchMode('register')}
+            onClick={() => {
+              setMode('register');
+              setError(null);
+            }}
             className={`py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               mode === 'register'
                 ? darkMode
@@ -162,7 +162,7 @@ export function AuthModal({
                   type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Ví dụ: Nguyễn Minh / Sokha"
+                  placeholder="Ví dụ: Nguyễn Minh Anh"
                   className={`w-full pl-10 pr-4 py-2.5 rounded-xl text-sm border outline-none transition-colors ${
                     darkMode
                       ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-zinc-600'
@@ -174,14 +174,14 @@ export function AuthModal({
           )}
 
           <div>
-            <label className="block text-xs font-semibold mb-1.5">Địa chỉ Email</label>
+            <label className="block text-xs font-semibold mb-1.5">Email</label>
             <div className="relative">
               <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400" />
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="ban@example.com"
+                placeholder="ban@congty.com"
                 className={`w-full pl-10 pr-4 py-2.5 rounded-xl text-sm border outline-none transition-colors ${
                   darkMode
                     ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-zinc-600'
@@ -229,7 +229,7 @@ export function AuthModal({
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <>
-                {mode === 'login' ? 'Đăng nhập vào Studio' : 'Tạo tài khoản & Vào Studio'}
+                {mode === 'login' ? 'Đăng nhập vào Studio' : 'Tạo tài khoản & Bắt đầu'}
                 <ArrowRight className="w-4 h-4" />
               </>
             )}
@@ -242,10 +242,9 @@ export function AuthModal({
           }`}
         >
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-          <span>Mã hóa mật khẩu PBKDF2-SHA256 & lưu trữ SQLite an toàn</span>
+          <span>Lưu trữ bảo mật SQLite Database • Miễn phí 100%</span>
         </div>
       </div>
     </div>
   );
 }
-
