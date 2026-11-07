@@ -1,6 +1,8 @@
 import type {
   AuthUser,
   FormAnalytics,
+  FormResponseItem,
+  QuizSubmissionResult,
   ServerInfo,
   SurveyForm,
   SurveyTemplate,
@@ -173,6 +175,7 @@ export async function agentGenerateForm(payload: {
   prompt: string;
   question_count: number;
   theme_color: string;
+  is_quiz?: boolean;
   is_published?: boolean;
 }): Promise<{ form: SurveyForm; public_url: string; generator_engine: string }> {
   const res = await apiFetch('/api/forms/agent-generate', {
@@ -188,6 +191,7 @@ export async function agentGenerateForm(payload: {
 export async function importFormFromCode(payload: {
   code: string;
   theme_color?: string;
+  is_quiz?: boolean;
   is_published?: boolean;
   parse_only?: boolean;
 }): Promise<{ form?: SurveyForm; parsed?: Partial<SurveyForm>; public_url?: string }> {
@@ -233,7 +237,7 @@ export async function deleteSurveyForm(formId: string): Promise<void> {
   if (!res.ok) throw new Error('Không thể xóa biểu mẫu');
 }
 
-// ==================== PUBLIC SURVEY & ANALYTICS ====================
+// ==================== PUBLIC SURVEY / EXAM & GRADEBOOK ====================
 
 export async function fetchPublicSurvey(identifier: string): Promise<SurveyForm> {
   const res = await apiFetch(`/api/public/forms/${encodeURIComponent(identifier)}`);
@@ -247,12 +251,20 @@ export async function submitPublicSurvey(
   payload: {
     respondent_name?: string;
     respondent_email?: string;
+    student_class?: string;
     answers: Record<string, unknown>;
+    cheat_count?: number;
+    cheat_logs?: string[];
+    auto_submitted_cheat?: boolean;
+    duration_seconds?: number;
   }
 ): Promise<{
   submitted: boolean;
   thank_you_message: string;
   allow_public_summary: boolean;
+  is_quiz?: boolean;
+  show_score_immediately?: boolean;
+  quiz_result?: QuizSubmissionResult | null;
 }> {
   const res = await apiFetch(
     `/api/public/forms/${encodeURIComponent(identifier)}/submit`,
@@ -263,7 +275,7 @@ export async function submitPublicSurvey(
     }
   );
   const data = await res.json().catch(() => ({ detail: 'Lỗi gửi câu trả lời' }));
-  if (!res.ok) throw new Error(data.detail || 'Không thể gửi khảo sát');
+  if (!res.ok) throw new Error(data.detail || 'Không thể gửi bài làm');
   return data;
 }
 
@@ -281,6 +293,45 @@ export async function fetchFormAnalytics(identifier: string): Promise<FormAnalyt
   const data = await res.json().catch(() => ({ detail: 'Lỗi tải thống kê' }));
   if (!res.ok) throw new Error(data.detail || 'Không thể tải dữ liệu thống kê');
   return data;
+}
+
+export async function updateStudentGrade(
+  formId: string,
+  responseId: string,
+  payload: {
+    bonus_score?: number;
+    final_score?: number;
+    teacher_note?: string;
+  }
+): Promise<FormResponseItem> {
+  const res = await apiFetch(`/api/forms/${formId}/responses/${responseId}/grade`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi cập nhật điểm' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể lưu điểm học sinh');
+  return data.response;
+}
+
+export async function addManualStudentGrade(
+  formId: string,
+  payload: {
+    respondent_name: string;
+    student_class?: string;
+    final_score: number;
+    max_score?: number;
+    teacher_note?: string;
+  }
+): Promise<FormResponseItem> {
+  const res = await apiFetch(`/api/forms/${formId}/manual-grade`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi thêm điểm học sinh' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể thêm điểm riêng');
+  return data.response;
 }
 
 export async function deleteResponseItem(

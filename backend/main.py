@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 import csv
 import os
+import random
 import socket
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -30,6 +31,7 @@ from database import (
     regenerate_user_agent_key,
     submit_response,
     update_form,
+    update_response_grade,
 )
 from form_agent import generate_form_from_prompt, parse_quick_code_to_form
 from templates_catalog import SURVEY_TEMPLATES
@@ -42,9 +44,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="KromaForms Studio API",
-    description="Private Multi-Tenant Survey & Public Form Builder Platform with AI Agent Quick Generator",
-    version="3.1.0",
+    title="KromaForms Studio & Classroom Quiz API",
+    description="Private Multi-Tenant Survey, Auto-Graded Homework Quiz & Anti-Cheat Exam Platform",
+    version="3.2.0",
     lifespan=lifespan,
 )
 
@@ -114,6 +116,9 @@ class QuestionItem(BaseModel):
     required: bool = Field(default=False)
     options: list[str] = Field(default_factory=list)
     max_rating: int = Field(default=5)
+    points: float = Field(default=0.0)
+    correct_answer: Any = Field(default=None)
+    explanation: str = Field(default="")
 
 
 class FormPayload(BaseModel):
@@ -121,12 +126,20 @@ class FormPayload(BaseModel):
     description: str = Field(default="", max_length=2000)
     theme_color: str = Field(default="indigo")
     thank_you_message: str = Field(
-        default="Cảm ơn bạn đã dành thời gian hoàn thành khảo sát!", max_length=500
+        default="Cảm ơn bạn đã dành thời gian hoàn thành!", max_length=500
     )
     is_published: bool = Field(default=True)
     accepting_responses: bool = Field(default=True)
     collect_email: bool = Field(default=False)
     allow_public_summary: bool = Field(default=True)
+    is_quiz: bool = Field(default=False)
+    time_limit_minutes: int = Field(default=0, ge=0, le=300)
+    anti_cheat_enabled: bool = Field(default=False)
+    max_violations: int = Field(default=3, ge=1, le=20)
+    show_score_immediately: bool = Field(default=True)
+    shuffle_questions: bool = Field(default=False)
+    strict_roster: bool = Field(default=False)
+    student_roster: list[str] = Field(default_factory=list)
     questions: list[QuestionItem] = Field(default_factory=list)
 
 
@@ -134,12 +147,14 @@ class AgentGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=2, max_length=1500)
     question_count: int = Field(default=6, ge=2, le=15)
     theme_color: str = Field(default="indigo")
+    is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
 
 
 class ImportCodeRequest(BaseModel):
     code: str = Field(..., min_length=3, max_length=20000)
     theme_color: str = Field(default="indigo")
+    is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
     parse_only: bool = Field(default=False)
 
@@ -151,6 +166,7 @@ class ExternalAgentQuickCreateRequest(BaseModel):
     title: str | None = Field(default=None)
     description: str = Field(default="")
     theme_color: str = Field(default="indigo")
+    is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
     questions: list[dict[str, Any]] | None = Field(default=None)
 
@@ -158,7 +174,26 @@ class ExternalAgentQuickCreateRequest(BaseModel):
 class SubmitSurveyRequest(BaseModel):
     respondent_name: str | None = Field(default=None, max_length=120)
     respondent_email: str | None = Field(default=None, max_length=120)
+    student_class: str | None = Field(default=None, max_length=80)
     answers: dict[str, Any] = Field(default_factory=dict)
+    cheat_count: int = Field(default=0, ge=0)
+    cheat_logs: list[str] = Field(default_factory=list)
+    auto_submitted_cheat: bool = Field(default=False)
+    duration_seconds: int = Field(default=0, ge=0)
+
+
+class UpdateGradeRequest(BaseModel):
+    bonus_score: float | None = Field(default=None)
+    final_score: float | None = Field(default=None)
+    teacher_note: str | None = Field(default=None, max_length=500)
+
+
+class ManualStudentGradeRequest(BaseModel):
+    respondent_name: str = Field(..., min_length=1, max_length=120)
+    student_class: str | None = Field(default=None, max_length=80)
+    final_score: float = Field(..., ge=0, le=1000)
+    max_score: float = Field(default=10.0, gt=0, le=1000)
+    teacher_note: str | None = Field(default="Chấm điểm riêng trực tiếp", max_length=500)
 
 
 # ==================== AUTH HELPERS ====================
@@ -211,14 +246,91 @@ def _assert_form_owner(form: dict[str, Any] | None, user: dict[str, Any]) -> dic
     return form
 
 
+# ==================== QUIZ AUTO-GRADING ENGINE ====================
+
+def _grade_quiz_submission(
+    form: dict[str, Any], answers: dict[str, Any]
+) -> dict[str, Any]:
+    total_earned = 0.0
+    total_max = 0.0
+    details: list[dict[str, Any]] = []
+
+    for q in form["questions"]:
+        qid = q["id"]
+        qtype = q.get("type", "short_text")
+        pts = float(q.get("points") or 0.0)
+        total_max += pts
+        correct_ans = q.get("correct_answer")
+        user_ans = answers.get(qid)
+
+        is_correct: bool | None = None
+        earned = 0.0
+
+        has_key = correct_ans is not None and correct_ans != "" and correct_ans != []
+        if pts > 0 and has_key:
+            if qtype in ("single_choice", "dropdown"):
+                is_correct = (
+                    user_ans is not None
+                    and str(user_ans).strip() == str(correct_ans).strip()
+                )
+            elif qtype == "multiple_choice":
+                u_list = user_ans if isinstance(user_ans, list) else []
+                c_list = (
+                    correct_ans
+                    if isinstance(correct_ans, list)
+                    else [str(correct_ans)]
+                )
+                u_set = {str(x).strip() for x in u_list if str(x).strip()}
+                c_set = {str(x).strip() for x in c_list if str(x).strip()}
+                is_correct = bool(c_set) and (u_set == c_set)
+            elif qtype == "short_text":
+                accepted = [
+                    s.strip().lower()
+                    for s in str(correct_ans).split("|")
+                    if s.strip()
+                ]
+                u_str = str(user_ans or "").strip().lower()
+                is_correct = bool(u_str) and (u_str in accepted)
+
+            if is_correct:
+                earned = pts
+
+        total_earned += earned
+        details.append(
+            {
+                "question_id": qid,
+                "title": q["title"],
+                "user_answer": user_ans,
+                "correct_answer": correct_ans if has_key else None,
+                "is_correct": is_correct,
+                "earned_points": round(earned, 2),
+                "max_points": round(pts, 2),
+                "explanation": q.get("explanation") or "",
+            }
+        )
+
+    if total_max <= 0:
+        total_max = 10.0
+
+    score_10 = round((total_earned / total_max) * 10.0, 2) if total_max > 0 else 0.0
+    return {
+        "auto_score": round(total_earned, 2),
+        "max_score": round(total_max, 2),
+        "score_10": score_10,
+        "correct_count": sum(1 for d in details if d["is_correct"] is True),
+        "gradable_count": sum(1 for d in details if d["is_correct"] is not None),
+        "question_results": details,
+    }
+
+
 # ==================== SYSTEM & AUTH ENDPOINTS ====================
 
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
-        "app": "KromaForms Studio",
-        "version": "3.1.0",
+        "app": "KromaForms Studio & Classroom",
+        "version": "3.2.0",
         "lan_ip": get_lan_ip(),
         "public_tunnel_url": get_public_tunnel_url(),
     }
@@ -290,7 +402,6 @@ async def get_survey_templates() -> dict[str, Any]:
 async def get_my_private_forms(
     user: dict[str, Any] | None = Depends(get_optional_user),
 ) -> dict[str, Any]:
-    """Strictly return ONLY forms belonging to the logged-in account."""
     if not user:
         return {"forms": []}
     return {"forms": list_forms_for_owner(user["id"])}
@@ -307,17 +418,20 @@ async def create_new_form(
             {
                 "id": "q_default_1",
                 "type": "single_choice",
-                "title": "Câu hỏi trắc nghiệm đầu tiên của bạn?",
+                "title": "Câu hỏi đầu tiên của bạn?",
                 "description": "",
                 "required": True,
-                "options": ["Lựa chọn 1", "Lựa chọn 2", "Lựa chọn 3"],
+                "options": ["Đáp án A", "Đáp án B", "Đáp án C", "Đáp án D"],
                 "max_rating": 5,
+                "points": 10.0 if data.get("is_quiz") else 0.0,
+                "correct_answer": "Đáp án A" if data.get("is_quiz") else None,
+                "explanation": "",
             }
         ]
     return create_form(data, user_id=user["id"])
 
 
-# ==================== AI AGENT & QUICK CODE FORM GENERATOR ====================
+# ==================== AI AGENT & QUICK CODE FORM/QUIZ GENERATOR ====================
 
 @app.post("/api/forms/agent-generate")
 async def agent_generate_survey(
@@ -328,11 +442,12 @@ async def agent_generate_survey(
         prompt=req.prompt,
         question_count=req.question_count,
         theme_color=req.theme_color,
+        is_quiz=req.is_quiz,
     )
     engine = generated.pop("generator_engine", "smart_agent")
     generated["is_published"] = req.is_published
     generated["accepting_responses"] = True
-    generated["allow_public_summary"] = True
+    generated["allow_public_summary"] = not generated.get("is_quiz", False)
     saved_form = create_form(generated, user_id=user["id"])
     urls = build_public_survey_urls(saved_form["slug"])
     return {
@@ -348,7 +463,9 @@ async def import_survey_from_quick_code(
     user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
     try:
-        parsed = parse_quick_code_to_form(req.code, default_theme=req.theme_color)
+        parsed = parse_quick_code_to_form(
+            req.code, default_theme=req.theme_color, force_quiz=req.is_quiz
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -357,7 +474,7 @@ async def import_survey_from_quick_code(
 
     parsed["is_published"] = req.is_published
     parsed["accepting_responses"] = True
-    parsed["allow_public_summary"] = True
+    parsed["allow_public_summary"] = not parsed.get("is_quiz", False)
     saved_form = create_form(parsed, user_id=user["id"])
     urls = build_public_survey_urls(saved_form["slug"])
     return {
@@ -371,13 +488,11 @@ async def external_agent_quick_create(
     req: ExternalAgentQuickCreateRequest,
     user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
-    """
-    Programmatic endpoint for external AI Agents / Python / cURL scripts using X-Agent-Key.
-    Accepts `prompt` OR `code` OR explicit `title` + `questions`.
-    """
     if req.code and req.code.strip():
         try:
-            form_data = parse_quick_code_to_form(req.code, default_theme=req.theme_color)
+            form_data = parse_quick_code_to_form(
+                req.code, default_theme=req.theme_color, force_quiz=req.is_quiz
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     elif req.prompt and req.prompt.strip():
@@ -385,13 +500,16 @@ async def external_agent_quick_create(
             prompt=req.prompt,
             question_count=req.question_count,
             theme_color=req.theme_color,
+            is_quiz=req.is_quiz,
         )
         form_data.pop("generator_engine", None)
     elif req.questions:
         form_data = {
-            "title": req.title or "Biểu mẫu tạo tự động qua Agent API",
+            "title": req.title or "Biểu mẫu tạo qua Agent API",
             "description": req.description,
             "theme_color": req.theme_color,
+            "is_quiz": req.is_quiz,
+            "anti_cheat_enabled": req.is_quiz,
             "questions": req.questions,
         }
     else:
@@ -404,7 +522,7 @@ async def external_agent_quick_create(
         form_data["title"] = req.title
     form_data["is_published"] = req.is_published
     form_data["accepting_responses"] = True
-    form_data["allow_public_summary"] = True
+    form_data["allow_public_summary"] = not form_data.get("is_quiz", False)
 
     created = create_form(form_data, user_id=user["id"])
     urls = build_public_survey_urls(created["slug"])
@@ -418,15 +536,14 @@ async def external_agent_quick_create(
     }
 
 
-# ==================== OWNER-ONLY FORM OPERATIONS ====================
+# ==================== OWNER-ONLY FORM & GRADEBOOK OPERATIONS ====================
 
 @app.get("/api/forms/{form_id}")
 async def get_single_form(
     form_id: str,
     user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
-    form = get_form_by_id(form_id)
-    return _assert_form_owner(form, user)
+    return _assert_form_owner(get_form_by_id(form_id), user)
 
 
 @app.put("/api/forms/{form_id}")
@@ -459,6 +576,14 @@ async def duplicate_existing_form(
         "accepting_responses": True,
         "collect_email": original["collect_email"],
         "allow_public_summary": original["allow_public_summary"],
+        "is_quiz": original["is_quiz"],
+        "time_limit_minutes": original["time_limit_minutes"],
+        "anti_cheat_enabled": original["anti_cheat_enabled"],
+        "max_violations": original["max_violations"],
+        "show_score_immediately": original["show_score_immediately"],
+        "shuffle_questions": original["shuffle_questions"],
+        "strict_roster": original["strict_roster"],
+        "student_roster": original["student_roster"],
         "questions": original["questions"],
     }
     return create_form(copy_data, user_id=user["id"])
@@ -478,7 +603,53 @@ async def remove_form(
     return {"deleted": True, "id": form_id}
 
 
-# ==================== PUBLIC RESPONDENT ENDPOINTS ====================
+@app.patch("/api/forms/{form_id}/responses/{response_id}/grade")
+async def patch_student_grade(
+    form_id: str,
+    response_id: str,
+    req: UpdateGradeRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    _assert_form_owner(get_form_by_id(form_id), user)
+    updated = update_response_grade(
+        form_id=form_id,
+        response_id=response_id,
+        bonus_score=req.bonus_score,
+        final_score=req.final_score,
+        teacher_note=req.teacher_note,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài nộp của học sinh.")
+    return {"response": updated}
+
+
+@app.post("/api/forms/{form_id}/manual-grade")
+async def add_manual_student_grade(
+    form_id: str,
+    req: ManualStudentGradeRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    """Allow teacher to assign a custom score directly to any student name in the Gradebook."""
+    _assert_form_owner(get_form_by_id(form_id), user)
+    saved = submit_response(
+        form_id=form_id,
+        answers={},
+        respondent_name=req.respondent_name,
+        student_class=req.student_class,
+        auto_score=0.0,
+        max_score=req.max_score,
+        bonus_score=req.final_score,
+        final_score=req.final_score,
+        teacher_note=req.teacher_note,
+        cheat_count=0,
+        cheat_logs=[],
+        auto_submitted_cheat=False,
+        duration_seconds=0,
+    )
+    return {"response": saved}
+
+
+# ==================== PUBLIC STUDENT / RESPONDENT ENDPOINTS ====================
 
 @app.get("/api/public/forms/{identifier}")
 async def fetch_public_form(identifier: str) -> dict[str, Any]:
@@ -486,11 +657,23 @@ async def fetch_public_form(identifier: str) -> dict[str, Any]:
     if not form or not form["is_published"]:
         raise HTTPException(
             status_code=404,
-            detail="Biểu mẫu này không tồn tại hoặc đã tạm ngừng công khai (Private).",
+            detail="Biểu mẫu / Bài tập này không tồn tại hoặc đã đóng công khai.",
         )
-    # Strip internal owner user_id when returning to public respondents
+
+    # Strip answer keys & explanations so students cannot inspect DevTools!
+    safe_questions = []
+    for q in form["questions"]:
+        sq = dict(q)
+        sq.pop("correct_answer", None)
+        sq.pop("explanation", None)
+        safe_questions.append(sq)
+
+    if form.get("shuffle_questions"):
+        random.shuffle(safe_questions)
+
     public_copy = dict(form)
     public_copy.pop("user_id", None)
+    public_copy["questions"] = safe_questions
     return public_copy
 
 
@@ -501,41 +684,81 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
         raise HTTPException(status_code=404, detail="Biểu mẫu không tồn tại hoặc đã đóng.")
     if not form["accepting_responses"]:
         raise HTTPException(
-            status_code=400, detail="Biểu mẫu này hiện đã ngừng nhận câu trả lời mới."
+            status_code=400, detail="Bài tập / Biểu mẫu này hiện đã khóa nhận bài mới."
         )
+
+    clean_name = (req.respondent_name or "").strip()
+    if form["is_quiz"] and not clean_name:
+        raise HTTPException(
+            status_code=400, detail="Vui lòng nhập hoặc chọn Họ và tên Học sinh trước khi nộp bài!"
+        )
+
+    if form["strict_roster"] and form["student_roster"]:
+        allowed_names = {n.strip().lower() for n in form["student_roster"]}
+        if clean_name.lower() not in allowed_names:
+            raise HTTPException(
+                status_code=400,
+                detail="Tên học sinh không nằm trong Danh sách lớp được giao bài. Vui lòng chọn đúng tên trong danh sách!",
+            )
 
     if form["collect_email"] and not (req.respondent_email or "").strip():
         raise HTTPException(status_code=400, detail="Vui lòng nhập địa chỉ Email của bạn.")
 
-    for q in form["questions"]:
-        if q.get("required"):
-            val = req.answers.get(q["id"])
-            is_empty = (
-                val is None
-                or (isinstance(val, str) and not val.strip())
-                or (isinstance(val, list) and len(val) == 0)
-            )
-            if is_empty:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Vui lòng trả lời câu hỏi bắt buộc: {q['title']}",
+    # Skip strict required-field rejection ONLY if auto-submitted due to anti-cheat / timeout
+    if not req.auto_submitted_cheat:
+        for q in form["questions"]:
+            if q.get("required"):
+                val = req.answers.get(q["id"])
+                is_empty = (
+                    val is None
+                    or (isinstance(val, str) and not val.strip())
+                    or (isinstance(val, list) and len(val) == 0)
                 )
+                if is_empty:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Vui lòng trả lời câu hỏi bắt buộc: {q['title']}",
+                    )
+
+    quiz_result: dict[str, Any] | None = None
+    auto_score: float | None = None
+    max_score: float | None = None
+    final_score: float | None = None
+
+    if form["is_quiz"]:
+        quiz_result = _grade_quiz_submission(form, req.answers)
+        auto_score = quiz_result["auto_score"]
+        max_score = quiz_result["max_score"]
+        final_score = auto_score
 
     saved = submit_response(
         form_id=form["id"],
         answers=req.answers,
-        respondent_name=req.respondent_name,
+        respondent_name=clean_name or None,
         respondent_email=req.respondent_email,
+        student_class=req.student_class,
+        auto_score=auto_score,
+        max_score=max_score,
+        bonus_score=0.0,
+        final_score=final_score,
+        cheat_count=req.cheat_count,
+        cheat_logs=req.cheat_logs,
+        auto_submitted_cheat=req.auto_submitted_cheat,
+        duration_seconds=req.duration_seconds,
     )
+
     return {
         "submitted": True,
         "response": saved,
         "thank_you_message": form["thank_you_message"],
-        "allow_public_summary": form["allow_public_summary"],
+        "allow_public_summary": form["allow_public_summary"] and not form["is_quiz"],
+        "is_quiz": form["is_quiz"],
+        "show_score_immediately": form["show_score_immediately"],
+        "quiz_result": quiz_result if (form["is_quiz"] and form["show_score_immediately"]) else None,
     }
 
 
-# ==================== ANALYTICS & EXPORT ====================
+# ==================== ANALYTICS, GRADEBOOK & CSV EXPORT ====================
 
 def _build_question_analytics(
     form: dict[str, Any], responses: list[dict[str, Any]], include_open_text: bool = True
@@ -545,16 +768,37 @@ def _build_question_analytics(
         qid = q["id"]
         qtype = q["type"]
         answered_values = []
+        correct_hits = 0
+        has_key = q.get("correct_answer") not in (None, "", [])
+
         for r in responses:
             val = r["answers"].get(qid)
             if val is not None and val != "" and val != []:
                 answered_values.append(val)
+                if form["is_quiz"] and has_key:
+                    ca = q.get("correct_answer")
+                    if qtype in ("single_choice", "dropdown") and str(val).strip() == str(ca).strip():
+                        correct_hits += 1
+                    elif qtype == "multiple_choice":
+                        u_s = {str(x).strip() for x in (val if isinstance(val, list) else [])}
+                        c_s = {str(x).strip() for x in (ca if isinstance(ca, list) else [ca])}
+                        if u_s == c_s:
+                            correct_hits += 1
+                    elif qtype == "short_text":
+                        acc = [s.strip().lower() for s in str(ca).split("|") if s.strip()]
+                        if str(val).strip().lower() in acc:
+                            correct_hits += 1
 
         q_stat: dict[str, Any] = {
             "question_id": qid,
             "title": q["title"],
             "type": qtype,
             "answered_count": len(answered_values),
+            "points": float(q.get("points") or 0),
+            "correct_answer": q.get("correct_answer"),
+            "correct_rate": round((correct_hits / max(1, len(answered_values))) * 100, 1)
+            if (form["is_quiz"] and has_key and answered_values)
+            else None,
         }
 
         if qtype in ("single_choice", "dropdown"):
@@ -618,11 +862,66 @@ def _build_question_analytics(
     return stats_list
 
 
+def _build_roster_gradebook(
+    form: dict[str, Any], responses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    roster_names = form.get("student_roster") or []
+    by_lower_name: dict[str, dict[str, Any]] = {}
+    for r in responses:
+        nm = (r.get("respondent_name") or "").strip().lower()
+        if nm and nm not in by_lower_name:
+            by_lower_name[nm] = r
+
+    roster_rows: list[dict[str, Any]] = []
+    for st_name in roster_names:
+        matched = by_lower_name.get(st_name.strip().lower())
+        if matched:
+            max_s = float(matched.get("max_score") or 10.0)
+            fin_s = float(matched.get("final_score") or 0.0)
+            roster_rows.append(
+                {
+                    "student_name": st_name,
+                    "submitted": True,
+                    "response_id": matched["id"],
+                    "student_class": matched.get("student_class"),
+                    "auto_score": matched.get("auto_score"),
+                    "bonus_score": matched.get("bonus_score", 0.0),
+                    "final_score": fin_s,
+                    "max_score": max_s,
+                    "score_10": round((fin_s / max_s) * 10.0, 2) if max_s > 0 else fin_s,
+                    "cheat_count": matched.get("cheat_count", 0),
+                    "auto_submitted_cheat": matched.get("auto_submitted_cheat", False),
+                    "duration_seconds": matched.get("duration_seconds", 0),
+                    "teacher_note": matched.get("teacher_note"),
+                    "submitted_at": matched.get("submitted_at"),
+                }
+            )
+        else:
+            roster_rows.append(
+                {
+                    "student_name": st_name,
+                    "submitted": False,
+                    "response_id": None,
+                    "student_class": None,
+                    "auto_score": None,
+                    "bonus_score": 0.0,
+                    "final_score": None,
+                    "max_score": None,
+                    "score_10": None,
+                    "cheat_count": 0,
+                    "auto_submitted_cheat": False,
+                    "duration_seconds": 0,
+                    "teacher_note": None,
+                    "submitted_at": None,
+                }
+            )
+    return roster_rows
+
+
 @app.get("/api/public/forms/{identifier}/summary")
 async def get_public_form_summary(identifier: str) -> dict[str, Any]:
-    """Aggregated chart summary for respondents (ONLY if enabled by form owner; hides emails/names)."""
     form = get_form_by_slug_or_code(identifier, increment_view=False)
-    if not form or not form["is_published"] or not form["allow_public_summary"]:
+    if not form or not form["is_published"] or not form["allow_public_summary"] or form["is_quiz"]:
         raise HTTPException(
             status_code=403, detail="Biểu mẫu này không công khai kết quả thống kê."
         )
@@ -645,16 +944,33 @@ async def get_owner_form_analytics(
     form = _assert_form_owner(get_form_by_slug_or_code(identifier, increment_view=False), user)
     responses = list_responses(form["id"])
     question_stats = _build_question_analytics(form, responses, include_open_text=True)
+    roster_gradebook = _build_roster_gradebook(form, responses)
+
     completion_rate = (
         round((len(responses) / max(1, form["views_count"])) * 100, 1)
         if form["views_count"] > 0
         else 100.0
     )
+
+    scores_10: list[float] = []
+    flagged_cheat_students = 0
+    for r in responses:
+        if r.get("cheat_count", 0) > 0:
+            flagged_cheat_students += 1
+        if r.get("final_score") is not None:
+            ms = float(r.get("max_score") or 10.0)
+            fs = float(r["final_score"])
+            scores_10.append(round((fs / ms) * 10.0, 2) if ms > 0 else fs)
+
     return {
         "form": form,
         "total_responses": len(responses),
         "views_count": form["views_count"],
         "completion_rate": min(100.0, completion_rate),
+        "average_score_10": round(sum(scores_10) / len(scores_10), 2) if scores_10 else None,
+        "highest_score_10": max(scores_10) if scores_10 else None,
+        "flagged_cheat_count": flagged_cheat_students,
+        "roster_gradebook": roster_gradebook,
         "question_stats": question_stats,
         "responses": responses,
     }
@@ -672,27 +988,67 @@ async def export_responses_csv(
     buf.write("\ufeff")
     writer = csv.writer(buf)
 
-    headers = ["ID Phản hồi", "Thời gian gửi", "Họ tên người điền", "Email"] + [
-        q["title"] for q in form["questions"]
-    ]
-    writer.writerow(headers)
+    if form["is_quiz"]:
+        headers = [
+            "STT",
+            "Họ và tên Học sinh",
+            "Lớp / Mã HS",
+            "Điểm Trắc nghiệm",
+            "Điểm Cộng / Tự luận",
+            "Tổng Điểm",
+            "Quy đổi Thang 10",
+            "Số lần Thoát App (Gian lận)",
+            "Thời gian làm bài (giây)",
+            "Nhận xét của Giáo viên",
+            "Thời gian nộp",
+        ] + [q["title"] for q in form["questions"]]
+        writer.writerow(headers)
 
-    for r in responses:
-        row = [
-            r["id"],
-            r["submitted_at"],
-            r.get("respondent_name") or "Ẩn danh",
-            r.get("respondent_email") or "",
+        for idx, r in enumerate(responses, start=1):
+            ms = float(r.get("max_score") or 10.0)
+            fs = float(r.get("final_score") or 0.0)
+            s10 = round((fs / ms) * 10.0, 2) if ms > 0 else fs
+            row = [
+                idx,
+                r.get("respondent_name") or "Chưa ghi tên",
+                r.get("student_class") or "",
+                r.get("auto_score") if r.get("auto_score") is not None else "",
+                r.get("bonus_score", 0),
+                fs,
+                s10,
+                r.get("cheat_count", 0),
+                r.get("duration_seconds", 0),
+                r.get("teacher_note") or "",
+                r["submitted_at"],
+            ]
+            for q in form["questions"]:
+                ans = r["answers"].get(q["id"], "")
+                if isinstance(ans, list):
+                    ans = "; ".join(str(x) for x in ans)
+                row.append(str(ans) if ans is not None else "")
+            writer.writerow(row)
+    else:
+        headers = ["ID Phản hồi", "Thời gian gửi", "Họ tên người điền", "Email"] + [
+            q["title"] for q in form["questions"]
         ]
-        for q in form["questions"]:
-            ans = r["answers"].get(q["id"], "")
-            if isinstance(ans, list):
-                ans = "; ".join(str(x) for x in ans)
-            row.append(str(ans) if ans is not None else "")
-        writer.writerow(row)
+        writer.writerow(headers)
+        for r in responses:
+            row = [
+                r["id"],
+                r["submitted_at"],
+                r.get("respondent_name") or "Ẩn danh",
+                r.get("respondent_email") or "",
+            ]
+            for q in form["questions"]:
+                ans = r["answers"].get(q["id"], "")
+                if isinstance(ans, list):
+                    ans = "; ".join(str(x) for x in ans)
+                row.append(str(ans) if ans is not None else "")
+            writer.writerow(row)
 
     buf.seek(0)
-    filename = f"khao_sat_{form['slug']}.csv"
+    prefix = "bang_diem" if form["is_quiz"] else "khao_sat"
+    filename = f"{prefix}_{form['slug']}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv; charset=utf-8",

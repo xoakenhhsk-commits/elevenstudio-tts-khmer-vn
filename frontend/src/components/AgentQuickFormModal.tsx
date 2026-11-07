@@ -2,8 +2,10 @@ import {
   AlertCircle,
   Bot,
   Check,
+  ClipboardList,
   Code2,
   Copy,
+  GraduationCap,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -23,6 +25,7 @@ import type { AuthUser, ServerInfo, SurveyForm, ThemeColor } from '../types';
 interface AgentQuickFormModalProps {
   open: boolean;
   initialTab?: 'ai_prompt' | 'quick_code' | 'agent_api';
+  defaultQuizMode?: boolean;
   user: AuthUser | null;
   serverInfo: ServerInfo | null;
   darkMode: boolean;
@@ -31,57 +34,39 @@ interface AgentQuickFormModalProps {
   onUserKeyUpdated: (newKey: string) => void;
 }
 
+const SAMPLE_QUIZ_CODE = `# Bài Kiểm Tra 15 Phút — Toán & Tư Duy Logic
+> Chọn đúng tên học sinh trong danh sách lớp. Cấm thoát màn hình trong lúc làm bài!
+@quiz: on
+@time: 15
+@anticheat: on
+@roster: Nguyễn Minh Khôi, Trần Ngọc Bảo Trân, Lê Hoàng Gia Huy, Phạm Thùy Dương
+
+Nghiệm của phương trình 3x - 9 = 0 là bao nhiêu? * | radio: x = 2, *x = 3, x = 6, x = 9 | 2.5đ
+Những số nào dưới đây chia hết cho 5? * | checkbox: *10, 14, *25, 32 | 2.5đ
+Tính nhanh kết quả của 12 x 5 + 15: * | text: 75 | 2.5đ
+Trình bày ngắn gọn định lý Pytago (GV chấm điểm riêng): | textarea | 2.5đ`;
+
 const SAMPLE_DSL_CODE = `# Khảo sát Đăng ký Workshop AI & Web 2026
 > Điền thông tin để nhận vé mời và tài liệu thực hành miễn phí
 @theme: emerald
 
 Họ và tên đầy đủ của bạn * | text
 Email nhận tài liệu & vé mời * | email
-Công việc hiện tại của bạn * | radio: Sinh viên CNTT, Lập trình viên, Marketing / Kinh doanh, Quản lý / Chủ doanh nghiệp
-Chủ đề bạn quan tâm nhất | checkbox: Xây dựng AI Agent tự động, Thiết kế Web Full-Stack, Phân tích dữ liệu, Tự động hóa quy trình
-Hình thức tham gia * | dropdown: Tham dự trực tiếp tại Hội trường, Tham gia Online qua Zoom
-Mức độ mong đợi chương trình * | rating: 5
-Câu hỏi bạn muốn gửi trước cho diễn giả | textarea`;
+Công việc hiện tại của bạn * | radio: Sinh viên CNTT, Lập trình viên, Marketing / Kinh doanh
+Chủ đề bạn quan tâm nhất | checkbox: Xây dựng AI Agent, Thiết kế Web Full-Stack, Phân tích dữ liệu
+Mức độ mong đợi chương trình * | rating: 5`;
 
-const SAMPLE_PASTE_QUIZ = `# Phiếu Đánh Giá Chất Lượng Quán Cà Phê
-> Cảm ơn bạn đã ghé thăm quán hôm nay!
-@theme: amber
+const QUIZ_SUGGESTIONS = [
+  'Tạo đề kiểm tra 15 phút Tiếng Anh lớp 10 về thì Hiện tại đơn và Câu điều kiện',
+  'Bài tập trắc nghiệm Toán học gồm phương trình bậc nhất, hình học và tính nhẩm',
+  'Đề kiểm tra Tin học cơ bản về HTML, Internet, Phần cứng máy tính có chấm điểm',
+  'Bài kiểm tra Lịch sử & Địa lý Việt Nam có đáp án chấm thang điểm 10',
+];
 
-1. Bạn đánh giá chất lượng đồ uống hôm nay mấy sao? *
-2. Món đồ uống bạn yêu thích nhất tại quán? *
-- Cà phê muối đặc biệt
-- Trà đào cam sả
-- Matcha Latte kem phô mai
-- Cold Brew trái cây
-3. Không gian và âm nhạc tại quán theo bạn thế nào?
-- Rất chill, yên tĩnh dễ làm việc
-- Thoáng mát, sạch sẽ
-- Hơi ồn vào giờ cao điểm
-4. Góp ý thêm để quán phục vụ bạn tốt hơn`;
-
-const SAMPLE_JSON_CODE = `{
-  "title": "Form Ứng Tuyển Nhân Sự Công Nghệ",
-  "description": "Điền thông tin ứng tuyển nhanh chỉ trong 1 phút.",
-  "theme_color": "indigo",
-  "questions": [
-    { "type": "short_text", "title": "Họ và tên ứng viên", "required": true },
-    { "type": "email", "title": "Email liên hệ", "required": true },
-    {
-      "type": "single_choice",
-      "title": "Vị trí ứng tuyển",
-      "required": true,
-      "options": ["Frontend React/TypeScript", "Backend Python/FastAPI", "AI Engineer", "UI/UX Designer"]
-    },
-    { "type": "rating", "title": "Tự đánh giá kỹ năng làm việc nhóm", "required": true, "max_rating": 5 },
-    { "type": "long_text", "title": "Link GitHub / CV / Dự án nổi bật", "required": true }
-  ]
-}`;
-
-const PROMPT_SUGGESTIONS = [
-  'Khảo sát đánh giá quán cà phê / trà sữa gồm đồ uống, không gian, nhân viên và góp ý',
-  'Form đăng ký tuyển dụng thực tập sinh IT React & Python gồm họ tên, email, kỹ năng, link CV',
-  'Đăng ký tham gia sự kiện Workshop AI cho sinh viên gồm khung giờ, chủ đề quan tâm',
-  'Phiếu đánh giá chất lượng khóa học và giảng viên cuối kỳ cho học viên',
+const SURVEY_SUGGESTIONS = [
+  'Khảo sát đánh giá quán cà phê / trà sữa gồm đồ uống, không gian, nhân viên',
+  'Form đăng ký tuyển dụng thực tập sinh IT gồm họ tên, email, kỹ năng, link CV',
+  'Phiếu khảo sát ý kiến phụ huynh học sinh cuối học kỳ',
 ];
 
 const THEMES: { id: ThemeColor; label: string; dot: string }[] = [
@@ -96,6 +81,7 @@ const THEMES: { id: ThemeColor; label: string; dot: string }[] = [
 export function AgentQuickFormModal({
   open,
   initialTab = 'ai_prompt',
+  defaultQuizMode = true,
   user,
   serverInfo,
   darkMode,
@@ -104,10 +90,13 @@ export function AgentQuickFormModal({
   onUserKeyUpdated,
 }: AgentQuickFormModalProps) {
   const [tab, setTab] = useState<'ai_prompt' | 'quick_code' | 'agent_api'>(initialTab);
+  const [isQuizMode, setIsQuizMode] = useState<boolean>(defaultQuizMode);
   const [prompt, setPrompt] = useState('');
-  const [questionCount, setQuestionCount] = useState(6);
+  const [questionCount, setQuestionCount] = useState(5);
   const [themeColor, setThemeColor] = useState<ThemeColor>('indigo');
-  const [codeInput, setCodeInput] = useState(SAMPLE_DSL_CODE);
+  const [codeInput, setCodeInput] = useState(
+    defaultQuizMode ? SAMPLE_QUIZ_CODE : SAMPLE_DSL_CODE
+  );
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,12 +121,13 @@ export function AgentQuickFormModal({
         prompt: prompt.trim(),
         question_count: questionCount,
         theme_color: themeColor,
+        is_quiz: isQuizMode,
         is_published: true,
       });
       onFormCreated(res.form);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lỗi AI Agent tạo form');
+      setError(err instanceof Error ? err.message : 'Lỗi AI Agent tạo đề');
     } finally {
       setLoading(false);
     }
@@ -151,6 +141,7 @@ export function AgentQuickFormModal({
       const res = await importFormFromCode({
         code: codeInput,
         theme_color: themeColor,
+        is_quiz: isQuizMode,
         is_published: true,
       });
       if (res.form) {
@@ -186,23 +177,18 @@ res = requests.post(
     "${apiEndpointBase}/api/agent/quick-create",
     headers={"X-Agent-Key": "${agentKey}"},
     json={
-        "prompt": "Tạo khảo sát hài lòng khách hàng quán cà phê 5 câu",
+        "prompt": "Tạo đề kiểm tra 15 phút Tiếng Anh lớp 10 có đáp án chấm điểm",
         "question_count": 5,
-        "theme_color": "emerald",
-        "is_published": True
+        "is_quiz": True,
+        "theme_color": "indigo"
     }
 )
 data = res.json()
-print("Mã Form:", data["access_code"])
-print("Link Public điền ngay:", data["public_url"])`;
-
-  const curlAgentSnippet = `curl -X POST "${apiEndpointBase}/api/agent/quick-create" \\
-  -H "Content-Type: application/json" \\
-  -H "X-Agent-Key: ${agentKey}" \\
-  -d '{"prompt":"Form đăng ký sự kiện Workshop AI","question_count":6,"theme_color":"indigo"}'`;
+print("Mã Bài Tập:", data["access_code"])
+print("Link giao cho Học sinh:", data["public_url"])`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto">
       <div
         className={`w-full max-w-2xl rounded-3xl border overflow-hidden shadow-2xl my-auto ${
           darkMode
@@ -212,20 +198,20 @@ print("Link Public điền ngay:", data["public_url"])`;
       >
         {/* Header */}
         <div
-          className={`px-6 py-4 border-b flex items-center justify-between ${
+          className={`px-5 sm:px-6 py-4 border-b flex items-center justify-between ${
             darkMode ? 'border-zinc-800' : 'border-zinc-200'
           }`}
         >
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-emerald-500 text-white flex items-center justify-center shadow-sm">
+            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-emerald-500 text-white flex items-center justify-center shadow-sm shrink-0">
               <Bot className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-display font-bold text-base">
-                Agent &amp; Code Tạo Biểu Mẫu Siêu Tốc
+              <h2 className="font-display font-bold text-sm sm:text-base">
+                Agent Soạn Bài Tập Chấm Điểm &amp; Tạo Form Nhanh
               </h2>
-              <p className="text-xs text-zinc-500">
-                Tạo khảo sát riêng trong tài khoản của bạn ({user?.full_name}) chỉ trong vài giây
+              <p className="text-[11px] sm:text-xs text-zinc-500">
+                Lưu riêng tư trong tài khoản {user?.full_name} • Tự động sinh đáp án &amp; chống thoát App
               </p>
             </div>
           </div>
@@ -242,7 +228,7 @@ print("Link Public điền ngay:", data["public_url"])`;
 
         {/* Mode Tabs */}
         <div
-          className={`px-6 pt-4 pb-2 border-b ${
+          className={`px-4 sm:px-6 pt-3.5 pb-2 border-b ${
             darkMode ? 'border-zinc-800/80 bg-zinc-900/40' : 'border-zinc-100 bg-zinc-50/70'
           }`}
         >
@@ -252,9 +238,9 @@ print("Link Public điền ngay:", data["public_url"])`;
             }`}
           >
             {[
-              { id: 'ai_prompt', label: 'AI Agent Tự Tạo', icon: Wand2 },
-              { id: 'quick_code', label: 'Dán Code / Cú Pháp Nhanh', icon: Code2 },
-              { id: 'agent_api', label: 'API Code Cho Agent', icon: Terminal },
+              { id: 'ai_prompt', label: 'AI Soạn Tự Động', icon: Wand2 },
+              { id: 'quick_code', label: 'Dán Code Đề Thi', icon: Code2 },
+              { id: 'agent_api', label: 'API Cho Agent', icon: Terminal },
             ].map((t) => {
               const Icon = t.icon;
               const active = tab === t.id;
@@ -266,7 +252,7 @@ print("Link Public điền ngay:", data["public_url"])`;
                     setError(null);
                     setTab(t.id as typeof tab);
                   }}
-                  className={`py-2 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  className={`py-2 px-2 rounded-xl text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                     active
                       ? darkMode
                         ? 'bg-zinc-800 text-white shadow-xs'
@@ -274,7 +260,7 @@ print("Link Public điền ngay:", data["public_url"])`;
                       : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
                   }`}
                 >
-                  <Icon className="w-3.5 h-3.5" />
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">{t.label}</span>
                 </button>
               );
@@ -282,8 +268,7 @@ print("Link Public điền ngay:", data["public_url"])`;
           </div>
         </div>
 
-        {/* Body */}
-        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+        <div className="p-5 sm:p-6 space-y-4 max-h-[76vh] overflow-y-auto">
           {error && (
             <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -291,19 +276,76 @@ print("Link Public điền ngay:", data["public_url"])`;
             </div>
           )}
 
-          {/* TAB 1: AI AGENT PROMPT GENERATOR */}
+          {/* QUIZ VS SURVEY MODE SWITCH */}
+          {tab !== 'agent_api' && (
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsQuizMode(true);
+                  setCodeInput(SAMPLE_QUIZ_CODE);
+                }}
+                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                  isQuizMode
+                    ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500'
+                    : darkMode
+                      ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
+                      : 'border-zinc-200 bg-zinc-50 text-zinc-600'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-xs font-bold">
+                  <GraduationCap className="w-4 h-4 text-indigo-500" />
+                  <span>Bài Tập / Đề Kiểm Tra</span>
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-0.5">
+                  Có đáp án chấm thang 10 + Chống thoát App
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsQuizMode(false);
+                  setCodeInput(SAMPLE_DSL_CODE);
+                }}
+                className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                  !isQuizMode
+                    ? 'border-emerald-500 bg-emerald-500/10 ring-1 ring-emerald-500'
+                    : darkMode
+                      ? 'border-zinc-800 bg-zinc-900/50 text-zinc-400'
+                      : 'border-zinc-200 bg-zinc-50 text-zinc-600'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-xs font-bold">
+                  <ClipboardList className="w-4 h-4 text-emerald-500" />
+                  <span>Biểu Mẫu Khảo Sát</span>
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-0.5">
+                  Thu thập ý kiến, đăng ký sự kiện, đánh giá sao
+                </div>
+              </button>
+            </div>
+          )}
+
+          {/* TAB 1: AI AGENT */}
           {tab === 'ai_prompt' && (
             <form onSubmit={handleRunAiAgent} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold mb-1.5">
-                  Mô tả biểu mẫu bạn muốn Agent thiết kế tự động
+                  {isQuizMode
+                    ? 'Nhập môn học / chủ đề bài tập bạn muốn giao cho học sinh:'
+                    : 'Nhập chủ đề biểu mẫu khảo sát:'}
                 </label>
                 <textarea
                   rows={3}
                   required
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Ví dụ: Tạo khảo sát đánh giá chất lượng dịch vụ nha khoa gồm thái độ bác sĩ, chi phí, thời gian chờ và ý kiến đóng góp..."
+                  placeholder={
+                    isQuizMode
+                      ? 'Ví dụ: Đề kiểm tra 15 phút Tiếng Anh lớp 10 về thì Hiện tại hoàn thành và Từ vựng...'
+                      : 'Ví dụ: Khảo sát hài lòng khách hàng quán cà phê...'
+                  }
                   className={`w-full p-3.5 rounded-2xl text-sm border outline-none resize-none ${
                     darkMode
                       ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500'
@@ -312,37 +354,30 @@ print("Link Public điền ngay:", data["public_url"])`;
                 />
               </div>
 
-              {/* Quick Suggestions */}
-              <div>
-                <div className="text-[11px] font-semibold text-zinc-500 mb-2">
-                  Gợi ý bấm chọn nhanh:
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {PROMPT_SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setPrompt(s)}
-                      className={`text-left text-[11px] px-3 py-1.5 rounded-xl border transition-colors cursor-pointer ${
-                        darkMode
-                          ? 'bg-zinc-900 border-zinc-800 hover:border-indigo-500/60 text-zinc-300'
-                          : 'bg-zinc-50 border-zinc-200 hover:border-indigo-400 text-zinc-700'
-                      }`}
-                    >
-                      + {s}
-                    </button>
-                  ))}
-                </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(isQuizMode ? QUIZ_SUGGESTIONS : SURVEY_SUGGESTIONS).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setPrompt(s)}
+                    className={`text-left text-[11px] px-3 py-1.5 rounded-xl border transition-colors cursor-pointer ${
+                      darkMode
+                        ? 'bg-zinc-900 border-zinc-800 hover:border-indigo-500/60 text-zinc-300'
+                        : 'bg-zinc-50 border-zinc-200 hover:border-indigo-400 text-zinc-700'
+                    }`}
+                  >
+                    + {s}
+                  </button>
+                ))}
               </div>
 
-              {/* Question Count + Theme */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold mb-1.5">
-                    Số lượng câu hỏi cần tạo
+                    Số lượng câu hỏi
                   </label>
                   <div className="flex items-center gap-1.5">
-                    {[4, 6, 8, 10].map((n) => (
+                    {[4, 5, 8, 10].map((n) => (
                       <button
                         key={n}
                         type="button"
@@ -363,7 +398,7 @@ print("Link Public điền ngay:", data["public_url"])`;
 
                 <div>
                   <label className="block text-xs font-semibold mb-1.5">
-                    Màu giao diện biểu mẫu
+                    Màu chủ đề
                   </label>
                   <div className="flex items-center gap-2 pt-1.5">
                     {THEMES.map((th) => (
@@ -371,11 +406,10 @@ print("Link Public điền ngay:", data["public_url"])`;
                         key={th.id}
                         type="button"
                         onClick={() => setThemeColor(th.id)}
-                        title={th.label}
-                        className={`w-6 h-6 rounded-full ${th.dot} cursor-pointer transition-transform ${
+                        className={`w-6 h-6 rounded-full ${th.dot} cursor-pointer ${
                           themeColor === th.id
                             ? 'ring-2 ring-offset-2 ring-indigo-500 dark:ring-offset-zinc-950 scale-110'
-                            : 'opacity-70 hover:opacity-100'
+                            : 'opacity-70'
                         }`}
                       />
                     ))}
@@ -387,17 +421,19 @@ print("Link Public điền ngay:", data["public_url"])`;
                 <button
                   type="submit"
                   disabled={loading || !prompt.trim()}
-                  className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-xs sm:text-sm font-semibold bg-gradient-to-r from-indigo-600 to-violet-600 hover:opacity-95 text-white shadow-md cursor-pointer disabled:opacity-50"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full text-xs sm:text-sm font-bold bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md cursor-pointer disabled:opacity-50"
                 >
                   {loading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Agent đang thiết kế câu hỏi...
+                      Agent đang soạn đề &amp; đáp án...
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-4 h-4" />
-                      Agent Tự Tạo Form &amp; Lấy Link Ngay
+                      {isQuizMode
+                        ? 'Soạn Đề Chấm Điểm & Lấy Link Giao Bài'
+                        : 'Tạo Khảo Sát & Lấy Link Ngay'}
                     </>
                   )}
                 </button>
@@ -405,46 +441,33 @@ print("Link Public điền ngay:", data["public_url"])`;
             </form>
           )}
 
-          {/* TAB 2: QUICK CODE / DSL / JSON TO FORM */}
+          {/* TAB 2: QUICK CODE */}
           {tab === 'quick_code' && (
-            <div className="space-y-4">
+            <div className="space-y-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold">
-                  Nhập cú pháp Code ngắn gọn, dán câu hỏi Word/ChatGPT, hoặc JSON:
+                  Đặt dấu <code className="text-emerald-500 font-mono">*</code> trước đáp án đúng và <code className="text-indigo-500 font-mono">@roster:</code> cho DS tên HS:
                 </span>
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => setCodeInput(SAMPLE_DSL_CODE)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                      darkMode
-                        ? 'border-zinc-800 bg-zinc-900 text-emerald-400'
-                        : 'border-zinc-200 bg-zinc-50 text-emerald-700'
-                    }`}
+                    onClick={() => {
+                      setIsQuizMode(true);
+                      setCodeInput(SAMPLE_QUIZ_CODE);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-500/15 text-indigo-500 cursor-pointer"
                   >
-                    Mẫu Code Nhanh
+                    Mẫu Đề Kiểm Tra
                   </button>
                   <button
                     type="button"
-                    onClick={() => setCodeInput(SAMPLE_PASTE_QUIZ)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                      darkMode
-                        ? 'border-zinc-800 bg-zinc-900 text-amber-400'
-                        : 'border-zinc-200 bg-zinc-50 text-amber-700'
-                    }`}
+                    onClick={() => {
+                      setIsQuizMode(false);
+                      setCodeInput(SAMPLE_DSL_CODE);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-emerald-500/15 text-emerald-500 cursor-pointer"
                   >
-                    Mẫu Copy-Paste
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCodeInput(SAMPLE_JSON_CODE)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                      darkMode
-                        ? 'border-zinc-800 bg-zinc-900 text-indigo-400'
-                        : 'border-zinc-200 bg-zinc-50 text-indigo-700'
-                    }`}
-                  >
-                    Mẫu JSON
+                    Mẫu Khảo Sát
                   </button>
                 </div>
               </div>
@@ -454,54 +477,28 @@ print("Link Public điền ngay:", data["public_url"])`;
                 value={codeInput}
                 onChange={(e) => setCodeInput(e.target.value)}
                 spellCheck={false}
-                className={`w-full p-4 rounded-2xl font-mono text-xs leading-relaxed border outline-none ${
-                  darkMode
-                    ? 'bg-zinc-900 border-zinc-800 text-emerald-300 focus:border-emerald-500'
-                    : 'bg-zinc-950 border-zinc-800 text-emerald-300'
-                }`}
+                className="w-full p-4 rounded-2xl font-mono text-xs leading-relaxed bg-zinc-950 border border-zinc-800 text-emerald-300 outline-none"
               />
-
-              <div
-                className={`p-3 rounded-2xl text-[11px] leading-relaxed ${
-                  darkMode ? 'bg-zinc-900/80 text-zinc-400' : 'bg-zinc-100 text-zinc-600'
-                }`}
-              >
-                <strong>Mẹo cú pháp siêu tốc:</strong> Dùng{' '}
-                <code className="font-mono"># Tiêu đề</code>,{' '}
-                <code className="font-mono">*</code> ở cuối câu hỏi bắt buộc, và{' '}
-                <code className="font-mono">| radio: A, B, C</code> hoặc{' '}
-                <code className="font-mono">| checkbox: A, B</code>,{' '}
-                <code className="font-mono">| rating: 5</code>,{' '}
-                <code className="font-mono">| text</code>,{' '}
-                <code className="font-mono">| textarea</code>,{' '}
-                <code className="font-mono">| email</code>,{' '}
-                <code className="font-mono">| date</code>.
-              </div>
 
               <div className="flex justify-end">
                 <button
                   type="button"
                   onClick={handleCompileQuickCode}
                   disabled={loading || !codeInput.trim()}
-                  className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md cursor-pointer disabled:opacity-50"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-md cursor-pointer disabled:opacity-50"
                 >
                   {loading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Đang biên dịch...
-                    </>
+                    <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
-                    <>
-                      <Code2 className="w-4 h-4" />
-                      Chạy Code Tạo Form &amp; Xuất Bản Ngay
-                    </>
+                    <Code2 className="w-4 h-4" />
                   )}
+                  Biên dịch Code &amp; Tạo Đề Ngay
                 </button>
               </div>
             </div>
           )}
 
-          {/* TAB 3: EXTERNAL AGENT API KEY & PYTHON / CURL CODE */}
+          {/* TAB 3: AGENT API */}
           {tab === 'agent_api' && (
             <div className="space-y-4">
               <div
@@ -512,7 +509,7 @@ print("Link Public điền ngay:", data["public_url"])`;
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-xs font-bold inline-flex items-center gap-1.5">
                     <KeyRound className="w-3.5 h-3.5 text-amber-500" />
-                    Agent API Key riêng của tài khoản {user?.email}
+                    Agent API Key riêng của bạn
                   </span>
                   <button
                     type="button"
@@ -521,7 +518,7 @@ print("Link Public điền ngay:", data["public_url"])`;
                     className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-500 hover:underline cursor-pointer"
                   >
                     <RefreshCw className={`w-3 h-3 ${rotatingKey ? 'animate-spin' : ''}`} />
-                    Đổi Key mới
+                    Đổi Key
                   </button>
                 </div>
 
@@ -541,16 +538,15 @@ print("Link Public điền ngay:", data["public_url"])`;
                     onClick={() => copyText('key', agentKey)}
                     className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 cursor-pointer"
                   >
-                    {copiedKey === 'key' ? 'Đã chép' : 'Copy Key'}
+                    {copiedKey === 'key' ? 'Đã chép' : 'Copy'}
                   </button>
                 </div>
               </div>
 
-              {/* Python Code */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs font-semibold">
-                    Code Python cho AI Agent / Script tự động tạo Form &amp; nhận Link Public:
+                    Code Python gọi Agent tạo Đề Kiểm Tra &amp; nhận Link giao bài:
                   </span>
                   <button
                     type="button"
@@ -559,42 +555,17 @@ print("Link Public điền ngay:", data["public_url"])`;
                   >
                     {copiedKey === 'py' ? (
                       <>
-                        <Check className="w-3.5 h-3.5" /> Đã chép Code
+                        <Check className="w-3.5 h-3.5" /> Đã chép
                       </>
                     ) : (
                       <>
-                        <Copy className="w-3.5 h-3.5" /> Sao chép Python
+                        <Copy className="w-3.5 h-3.5" /> Copy Python
                       </>
                     )}
                   </button>
                 </div>
                 <pre className="p-3.5 rounded-2xl bg-zinc-950 text-zinc-200 border border-zinc-800 font-mono text-[11px] overflow-x-auto leading-relaxed">
                   {pythonAgentSnippet}
-                </pre>
-              </div>
-
-              {/* cURL Code */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-semibold">Lệnh Terminal cURL 1 dòng:</span>
-                  <button
-                    type="button"
-                    onClick={() => copyText('curl', curlAgentSnippet)}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-500 cursor-pointer"
-                  >
-                    {copiedKey === 'curl' ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" /> Đã chép
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" /> Sao chép cURL
-                      </>
-                    )}
-                  </button>
-                </div>
-                <pre className="p-3.5 rounded-2xl bg-zinc-950 text-emerald-300 border border-zinc-800 font-mono text-[11px] overflow-x-auto leading-relaxed">
-                  {curlAgentSnippet}
                 </pre>
               </div>
             </div>

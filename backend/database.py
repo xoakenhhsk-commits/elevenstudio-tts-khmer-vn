@@ -53,6 +53,15 @@ def _generate_slug(title: str) -> str:
     return f"{slug_base}-{suffix}"
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, column_defs: dict[str, str]) -> None:
+    existing_cols = {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for col_name, col_sql in column_defs.items():
+        if col_name not in existing_cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_sql}")
+
+
 def init_db() -> None:
     with get_connection() as conn:
         conn.execute(
@@ -71,15 +80,8 @@ def init_db() -> None:
             """
         )
 
-        # Safe migration for existing databases without agent_api_key
-        cols = [
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(users)").fetchall()
-        ]
-        if "agent_api_key" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN agent_api_key TEXT")
+        _ensure_columns(conn, "users", {"agent_api_key": "TEXT"})
 
-        # Backfill agent_api_key for any existing user missing one
         missing_key_users = conn.execute(
             "SELECT id FROM users WHERE agent_api_key IS NULL OR agent_api_key = ''"
         ).fetchall()
@@ -111,11 +113,19 @@ def init_db() -> None:
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 theme_color TEXT NOT NULL DEFAULT 'indigo',
-                thank_you_message TEXT NOT NULL DEFAULT 'Cảm ơn bạn đã dành thời gian hoàn thành khảo sát!',
+                thank_you_message TEXT NOT NULL DEFAULT 'Cảm ơn bạn đã dành thời gian hoàn thành!',
                 is_published INTEGER NOT NULL DEFAULT 1,
                 accepting_responses INTEGER NOT NULL DEFAULT 1,
                 collect_email INTEGER NOT NULL DEFAULT 0,
                 allow_public_summary INTEGER NOT NULL DEFAULT 1,
+                is_quiz INTEGER NOT NULL DEFAULT 0,
+                time_limit_minutes INTEGER NOT NULL DEFAULT 0,
+                anti_cheat_enabled INTEGER NOT NULL DEFAULT 0,
+                max_violations INTEGER NOT NULL DEFAULT 3,
+                show_score_immediately INTEGER NOT NULL DEFAULT 1,
+                shuffle_questions INTEGER NOT NULL DEFAULT 0,
+                strict_roster INTEGER NOT NULL DEFAULT 0,
+                student_roster_json TEXT NOT NULL DEFAULT '[]',
                 questions_json TEXT NOT NULL DEFAULT '[]',
                 views_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -125,6 +135,21 @@ def init_db() -> None:
             """
         )
 
+        _ensure_columns(
+            conn,
+            "forms",
+            {
+                "is_quiz": "INTEGER NOT NULL DEFAULT 0",
+                "time_limit_minutes": "INTEGER NOT NULL DEFAULT 0",
+                "anti_cheat_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "max_violations": "INTEGER NOT NULL DEFAULT 3",
+                "show_score_immediately": "INTEGER NOT NULL DEFAULT 1",
+                "shuffle_questions": "INTEGER NOT NULL DEFAULT 0",
+                "strict_roster": "INTEGER NOT NULL DEFAULT 0",
+                "student_roster_json": "TEXT NOT NULL DEFAULT '[]'",
+            },
+        )
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS form_responses (
@@ -132,16 +157,41 @@ def init_db() -> None:
                 form_id TEXT NOT NULL,
                 respondent_name TEXT,
                 respondent_email TEXT,
+                student_class TEXT,
                 answers_json TEXT NOT NULL DEFAULT '{}',
+                auto_score REAL,
+                max_score REAL,
+                bonus_score REAL NOT NULL DEFAULT 0,
+                final_score REAL,
+                teacher_note TEXT,
+                cheat_count INTEGER NOT NULL DEFAULT 0,
+                cheat_logs_json TEXT NOT NULL DEFAULT '[]',
+                auto_submitted_cheat INTEGER NOT NULL DEFAULT 0,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
                 submitted_at TEXT NOT NULL,
                 FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE
             )
             """
         )
 
-        # Remove legacy unowned demo/guest forms so personal dashboards stay strictly private
-        conn.execute("DELETE FROM forms WHERE user_id IS NULL")
+        _ensure_columns(
+            conn,
+            "form_responses",
+            {
+                "student_class": "TEXT",
+                "auto_score": "REAL",
+                "max_score": "REAL",
+                "bonus_score": "REAL NOT NULL DEFAULT 0",
+                "final_score": "REAL",
+                "teacher_note": "TEXT",
+                "cheat_count": "INTEGER NOT NULL DEFAULT 0",
+                "cheat_logs_json": "TEXT NOT NULL DEFAULT '[]'",
+                "auto_submitted_cheat": "INTEGER NOT NULL DEFAULT 0",
+                "duration_seconds": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
 
+        conn.execute("DELETE FROM forms WHERE user_id IS NULL")
         conn.commit()
 
 
@@ -289,10 +339,21 @@ def delete_session(token: str) -> None:
 def _parse_form_row(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
     d = dict(row)
     d["questions"] = json.loads(d.pop("questions_json", "[]"))
-    d["is_published"] = bool(d["is_published"])
-    d["accepting_responses"] = bool(d["accepting_responses"])
-    d["collect_email"] = bool(d["collect_email"])
-    d["allow_public_summary"] = bool(d["allow_public_summary"])
+    d["student_roster"] = json.loads(d.pop("student_roster_json", "[]") or "[]")
+    for bool_field in (
+        "is_published",
+        "accepting_responses",
+        "collect_email",
+        "allow_public_summary",
+        "is_quiz",
+        "anti_cheat_enabled",
+        "show_score_immediately",
+        "shuffle_questions",
+        "strict_roster",
+    ):
+        d[bool_field] = bool(d.get(bool_field, 0))
+    d["time_limit_minutes"] = int(d.get("time_limit_minutes") or 0)
+    d["max_violations"] = int(d.get("max_violations") or 3)
     count_row = conn.execute(
         "SELECT COUNT(*) AS cnt FROM form_responses WHERE form_id = ?",
         (d["id"],),
@@ -310,6 +371,7 @@ def create_form(data: dict[str, Any], user_id: str) -> dict[str, Any]:
     slug = _generate_slug(title)
     access_code = _generate_short_code()
     questions = data.get("questions") or []
+    roster = [str(s).strip() for s in (data.get("student_roster") or []) if str(s).strip()]
 
     with get_connection() as conn:
         conn.execute(
@@ -317,9 +379,11 @@ def create_form(data: dict[str, Any], user_id: str) -> dict[str, Any]:
             INSERT INTO forms (
                 id, user_id, slug, access_code, title, description,
                 theme_color, thank_you_message, is_published, accepting_responses,
-                collect_email, allow_public_summary, questions_json, views_count,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                collect_email, allow_public_summary,
+                is_quiz, time_limit_minutes, anti_cheat_enabled, max_violations,
+                show_score_immediately, shuffle_questions, strict_roster, student_roster_json,
+                questions_json, views_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 form_id,
@@ -331,12 +395,20 @@ def create_form(data: dict[str, Any], user_id: str) -> dict[str, Any]:
                 data.get("theme_color", "indigo"),
                 data.get(
                     "thank_you_message",
-                    "Cảm ơn bạn đã dành thời gian hoàn thành khảo sát!",
+                    "Cảm ơn bạn đã dành thời gian hoàn thành!",
                 ),
                 1 if data.get("is_published", True) else 0,
                 1 if data.get("accepting_responses", True) else 0,
                 1 if data.get("collect_email", False) else 0,
                 1 if data.get("allow_public_summary", True) else 0,
+                1 if data.get("is_quiz", False) else 0,
+                int(data.get("time_limit_minutes") or 0),
+                1 if data.get("anti_cheat_enabled", False) else 0,
+                int(data.get("max_violations") or 3),
+                1 if data.get("show_score_immediately", True) else 0,
+                1 if data.get("shuffle_questions", False) else 0,
+                1 if data.get("strict_roster", False) else 0,
+                json.dumps(roster, ensure_ascii=False),
                 json.dumps(questions, ensure_ascii=False),
                 now_iso,
                 now_iso,
@@ -365,6 +437,16 @@ def update_form(form_id: str, updates: dict[str, Any], user_id: str) -> dict[str
         accepting_responses = 1 if updates.get("accepting_responses", current["accepting_responses"]) else 0
         collect_email = 1 if updates.get("collect_email", current["collect_email"]) else 0
         allow_public_summary = 1 if updates.get("allow_public_summary", current["allow_public_summary"]) else 0
+        is_quiz = 1 if updates.get("is_quiz", current["is_quiz"]) else 0
+        time_limit_minutes = int(updates.get("time_limit_minutes", current["time_limit_minutes"]) or 0)
+        anti_cheat_enabled = 1 if updates.get("anti_cheat_enabled", current["anti_cheat_enabled"]) else 0
+        max_violations = max(1, int(updates.get("max_violations", current["max_violations"]) or 3))
+        show_score_immediately = 1 if updates.get("show_score_immediately", current["show_score_immediately"]) else 0
+        shuffle_questions = 1 if updates.get("shuffle_questions", current["shuffle_questions"]) else 0
+        strict_roster = 1 if updates.get("strict_roster", current["strict_roster"]) else 0
+
+        raw_roster = updates.get("student_roster", current["student_roster"])
+        roster = [str(s).strip() for s in (raw_roster or []) if str(s).strip()]
         questions = updates.get("questions", current["questions"])
 
         conn.execute(
@@ -372,8 +454,11 @@ def update_form(form_id: str, updates: dict[str, Any], user_id: str) -> dict[str
             UPDATE forms
             SET title = ?, description = ?, theme_color = ?,
                 thank_you_message = ?, is_published = ?, accepting_responses = ?,
-                collect_email = ?, allow_public_summary = ?, questions_json = ?,
-                updated_at = ?
+                collect_email = ?, allow_public_summary = ?,
+                is_quiz = ?, time_limit_minutes = ?, anti_cheat_enabled = ?,
+                max_violations = ?, show_score_immediately = ?, shuffle_questions = ?,
+                strict_roster = ?, student_roster_json = ?,
+                questions_json = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
@@ -385,6 +470,14 @@ def update_form(form_id: str, updates: dict[str, Any], user_id: str) -> dict[str
                 accepting_responses,
                 collect_email,
                 allow_public_summary,
+                is_quiz,
+                time_limit_minutes,
+                anti_cheat_enabled,
+                max_violations,
+                show_score_immediately,
+                shuffle_questions,
+                strict_roster,
+                json.dumps(roster, ensure_ascii=False),
                 json.dumps(questions, ensure_ascii=False),
                 now_iso,
                 form_id,
@@ -422,7 +515,6 @@ def get_form_by_slug_or_code(identifier: str, increment_view: bool = False) -> d
 
 
 def list_forms_for_owner(user_id: str) -> list[dict[str, Any]]:
-    """Strictly return ONLY forms belonging to this specific user account."""
     if not user_id:
         return []
     with get_connection() as conn:
@@ -445,40 +537,111 @@ def delete_form(form_id: str, user_id: str) -> bool:
         return True
 
 
-# ==================== RESPONSES & ANALYTICS ====================
+# ==================== RESPONSES, GRADING & ANTI-CHEAT LOGS ====================
+
+def _parse_response_row(r: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(r)
+    d["answers"] = json.loads(d.pop("answers_json", "{}") or "{}")
+    d["cheat_logs"] = json.loads(d.pop("cheat_logs_json", "[]") or "[]")
+    d["auto_submitted_cheat"] = bool(d.get("auto_submitted_cheat", 0))
+    d["cheat_count"] = int(d.get("cheat_count") or 0)
+    d["duration_seconds"] = int(d.get("duration_seconds") or 0)
+    d["bonus_score"] = float(d.get("bonus_score") or 0.0)
+    return d
+
 
 def submit_response(
     form_id: str,
     answers: dict[str, Any],
     respondent_name: str | None = None,
     respondent_email: str | None = None,
+    student_class: str | None = None,
+    auto_score: float | None = None,
+    max_score: float | None = None,
+    bonus_score: float = 0.0,
+    final_score: float | None = None,
+    teacher_note: str | None = None,
+    cheat_count: int = 0,
+    cheat_logs: list[str] | None = None,
+    auto_submitted_cheat: bool = False,
+    duration_seconds: int = 0,
 ) -> dict[str, Any]:
     now_iso = datetime.now(timezone.utc).isoformat()
     resp_id = f"rsp_{uuid.uuid4().hex[:12]}"
+    clean_name = (respondent_name or "").strip() or None
+    clean_email = (respondent_email or "").strip() or None
+    clean_class = (student_class or "").strip() or None
+
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO form_responses (id, form_id, respondent_name, respondent_email, answers_json, submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO form_responses (
+                id, form_id, respondent_name, respondent_email, student_class,
+                answers_json, auto_score, max_score, bonus_score, final_score,
+                teacher_note, cheat_count, cheat_logs_json, auto_submitted_cheat,
+                duration_seconds, submitted_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resp_id,
                 form_id,
-                (respondent_name or "").strip() or None,
-                (respondent_email or "").strip() or None,
+                clean_name,
+                clean_email,
+                clean_class,
                 json.dumps(answers, ensure_ascii=False),
+                auto_score,
+                max_score,
+                bonus_score,
+                final_score,
+                (teacher_note or "").strip() or None,
+                max(0, int(cheat_count)),
+                json.dumps(cheat_logs or [], ensure_ascii=False),
+                1 if auto_submitted_cheat else 0,
+                max(0, int(duration_seconds)),
                 now_iso,
             ),
         )
         conn.commit()
-    return {
-        "id": resp_id,
-        "form_id": form_id,
-        "respondent_name": respondent_name,
-        "respondent_email": respondent_email,
-        "answers": answers,
-        "submitted_at": now_iso,
-    }
+        row = conn.execute("SELECT * FROM form_responses WHERE id = ?", (resp_id,)).fetchone()
+        return _parse_response_row(row)
+
+
+def update_response_grade(
+    form_id: str,
+    response_id: str,
+    bonus_score: float | None = None,
+    final_score: float | None = None,
+    teacher_note: str | None = None,
+) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM form_responses WHERE id = ? AND form_id = ?",
+            (response_id, form_id),
+        ).fetchone()
+        if not row:
+            return None
+        cur = _parse_response_row(row)
+        next_bonus = bonus_score if bonus_score is not None else cur["bonus_score"]
+        if final_score is not None:
+            next_final = round(float(final_score), 2)
+        elif cur.get("auto_score") is not None:
+            next_final = round(float(cur["auto_score"]) + float(next_bonus), 2)
+        else:
+            next_final = round(float(next_bonus), 2)
+        next_note = teacher_note if teacher_note is not None else cur.get("teacher_note")
+
+        conn.execute(
+            """
+            UPDATE form_responses
+            SET bonus_score = ?, final_score = ?, teacher_note = ?
+            WHERE id = ? AND form_id = ?
+            """,
+            (next_bonus, next_final, next_note, response_id, form_id),
+        )
+        conn.commit()
+        updated = conn.execute("SELECT * FROM form_responses WHERE id = ?", (response_id,)).fetchone()
+        return _parse_response_row(updated)
 
 
 def list_responses(form_id: str) -> list[dict[str, Any]]:
@@ -487,12 +650,7 @@ def list_responses(form_id: str) -> list[dict[str, Any]]:
             "SELECT * FROM form_responses WHERE form_id = ? ORDER BY submitted_at DESC",
             (form_id,),
         ).fetchall()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            d = dict(r)
-            d["answers"] = json.loads(d.pop("answers_json", "{}"))
-            out.append(d)
-        return out
+        return [_parse_response_row(r) for r in rows]
 
 
 def delete_response(response_id: str, form_id: str) -> bool:
