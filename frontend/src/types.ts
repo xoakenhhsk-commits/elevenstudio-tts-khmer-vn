@@ -99,6 +99,7 @@ export interface AuthUser {
   email: string;
   avatar_gradient: string;
   plan: string;
+  agent_api_key?: string;
   created_at: string;
   last_login_at: string | null;
 }

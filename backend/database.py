@@ -37,6 +37,10 @@ def _generate_short_code() -> str:
     return "KF-" + "".join(secrets.choice(chars) for _ in range(5))
 
 
+def _generate_agent_key() -> str:
+    return "kf_agent_" + secrets.token_hex(16)
+
+
 def _generate_slug(title: str) -> str:
     import re
     import unicodedata
@@ -60,11 +64,30 @@ def init_db() -> None:
                 password_hash TEXT NOT NULL,
                 avatar_gradient TEXT NOT NULL,
                 plan TEXT NOT NULL DEFAULT 'Pro Free',
+                agent_api_key TEXT,
                 created_at TEXT NOT NULL,
                 last_login_at TEXT
             )
             """
         )
+
+        # Safe migration for existing databases without agent_api_key
+        cols = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        ]
+        if "agent_api_key" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN agent_api_key TEXT")
+
+        # Backfill agent_api_key for any existing user missing one
+        missing_key_users = conn.execute(
+            "SELECT id FROM users WHERE agent_api_key IS NULL OR agent_api_key = ''"
+        ).fetchall()
+        for u in missing_key_users:
+            conn.execute(
+                "UPDATE users SET agent_api_key = ? WHERE id = ?",
+                (_generate_agent_key(), u["id"]),
+            )
 
         conn.execute(
             """
@@ -97,7 +120,7 @@ def init_db() -> None:
                 views_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
@@ -116,6 +139,9 @@ def init_db() -> None:
             """
         )
 
+        # Remove legacy unowned demo/guest forms so personal dashboards stay strictly private
+        conn.execute("DELETE FROM forms WHERE user_id IS NULL")
+
         conn.commit()
 
 
@@ -133,6 +159,7 @@ def create_user(full_name: str, email: str, password: str) -> dict[str, Any]:
     user_id = f"usr_{uuid.uuid4().hex[:12]}"
     avatar = random.choice(AVATAR_GRADIENTS)
     pw_hash = hash_password(password)
+    agent_key = _generate_agent_key()
 
     with get_connection() as conn:
         existing = conn.execute(
@@ -143,10 +170,22 @@ def create_user(full_name: str, email: str, password: str) -> dict[str, Any]:
 
         conn.execute(
             """
-            INSERT INTO users (id, full_name, email, password_hash, avatar_gradient, plan, created_at, last_login_at)
-            VALUES (?, ?, ?, ?, ?, 'Pro Free', ?, ?)
+            INSERT INTO users (
+                id, full_name, email, password_hash, avatar_gradient,
+                plan, agent_api_key, created_at, last_login_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'Pro Free', ?, ?, ?)
             """,
-            (user_id, full_name.strip(), normalized_email, pw_hash, avatar, now_iso, now_iso),
+            (
+                user_id,
+                full_name.strip(),
+                normalized_email,
+                pw_hash,
+                avatar,
+                agent_key,
+                now_iso,
+                now_iso,
+            ),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -166,13 +205,43 @@ def authenticate_user(email: str, password: str) -> dict[str, Any] | None:
             return None
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "UPDATE users SET last_login_at = ? WHERE id = ?",
-            (now_iso, user_dict["id"]),
-        )
+        if not user_dict.get("agent_api_key"):
+            new_key = _generate_agent_key()
+            conn.execute(
+                "UPDATE users SET last_login_at = ?, agent_api_key = ? WHERE id = ?",
+                (now_iso, new_key, user_dict["id"]),
+            )
+            user_dict["agent_api_key"] = new_key
+        else:
+            conn.execute(
+                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                (now_iso, user_dict["id"]),
+            )
         conn.commit()
         user_dict["last_login_at"] = now_iso
         return _sanitize_user(user_dict)
+
+
+def regenerate_user_agent_key(user_id: str) -> str:
+    new_key = _generate_agent_key()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET agent_api_key = ? WHERE id = ?",
+            (new_key, user_id),
+        )
+        conn.commit()
+    return new_key
+
+
+def get_user_by_agent_key(api_key: str) -> dict[str, Any] | None:
+    if not api_key or not api_key.startswith("kf_agent_"):
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE agent_api_key = ?",
+            (api_key.strip(),),
+        ).fetchone()
+        return _sanitize_user(dict(row)) if row else None
 
 
 def create_session(user_id: str, days_valid: int = 30) -> str:
@@ -191,6 +260,8 @@ def create_session(user_id: str, days_valid: int = 30) -> str:
 def get_user_by_token(token: str) -> dict[str, Any] | None:
     if not token:
         return None
+    if token.startswith("kf_agent_"):
+        return get_user_by_agent_key(token)
     now_iso = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
         row = conn.execute(
@@ -213,7 +284,7 @@ def delete_session(token: str) -> None:
         conn.commit()
 
 
-# ==================== FORMS CRUD ====================
+# ==================== FORMS CRUD (STRICT PER-USER OWNERSHIP) ====================
 
 def _parse_form_row(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
     d = dict(row)
@@ -230,7 +301,9 @@ def _parse_form_row(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection)
     return d
 
 
-def create_form(data: dict[str, Any], user_id: str | None = None) -> dict[str, Any]:
+def create_form(data: dict[str, Any], user_id: str) -> dict[str, Any]:
+    if not user_id:
+        raise PermissionError("Vui lòng đăng nhập tài khoản để tạo biểu mẫu riêng.")
     now_iso = datetime.now(timezone.utc).isoformat()
     form_id = f"frm_{uuid.uuid4().hex[:12]}"
     title = (data.get("title") or "Biểu mẫu chưa có tiêu đề").strip()
@@ -274,14 +347,14 @@ def create_form(data: dict[str, Any], user_id: str | None = None) -> dict[str, A
         return _parse_form_row(row, conn)
 
 
-def update_form(form_id: str, updates: dict[str, Any], user_id: str | None = None) -> dict[str, Any] | None:
+def update_form(form_id: str, updates: dict[str, Any], user_id: str) -> dict[str, Any] | None:
     now_iso = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
         existing = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
         if not existing:
             return None
-        if existing["user_id"] and user_id != existing["user_id"]:
-            raise PermissionError("Bạn không có quyền chỉnh sửa biểu mẫu này.")
+        if existing["user_id"] != user_id:
+            raise PermissionError("Bạn không có quyền chỉnh sửa biểu mẫu của tài khoản khác.")
 
         current = _parse_form_row(existing, conn)
         title = updates.get("title", current["title"])
@@ -294,20 +367,16 @@ def update_form(form_id: str, updates: dict[str, Any], user_id: str | None = Non
         allow_public_summary = 1 if updates.get("allow_public_summary", current["allow_public_summary"]) else 0
         questions = updates.get("questions", current["questions"])
 
-        # Claim guest form if user logs in and edits it
-        new_owner = existing["user_id"] or user_id
-
         conn.execute(
             """
             UPDATE forms
-            SET user_id = ?, title = ?, description = ?, theme_color = ?,
+            SET title = ?, description = ?, theme_color = ?,
                 thank_you_message = ?, is_published = ?, accepting_responses = ?,
                 collect_email = ?, allow_public_summary = ?, questions_json = ?,
                 updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND user_id = ?
             """,
             (
-                new_owner,
                 title,
                 description,
                 theme_color,
@@ -319,6 +388,7 @@ def update_form(form_id: str, updates: dict[str, Any], user_id: str | None = Non
                 json.dumps(questions, ensure_ascii=False),
                 now_iso,
                 form_id,
+                user_id,
             ),
         )
         conn.commit()
@@ -351,32 +421,26 @@ def get_form_by_slug_or_code(identifier: str, increment_view: bool = False) -> d
         return _parse_form_row(row, conn)
 
 
-def list_forms(user_id: str | None = None, public_only: bool = False) -> list[dict[str, Any]]:
+def list_forms_for_owner(user_id: str) -> list[dict[str, Any]]:
+    """Strictly return ONLY forms belonging to this specific user account."""
+    if not user_id:
+        return []
     with get_connection() as conn:
-        if public_only:
-            rows = conn.execute(
-                "SELECT * FROM forms WHERE is_published = 1 ORDER BY updated_at DESC LIMIT 50"
-            ).fetchall()
-        elif user_id:
-            rows = conn.execute(
-                "SELECT * FROM forms WHERE user_id = ? ORDER BY updated_at DESC LIMIT 100",
-                (user_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM forms WHERE user_id IS NULL ORDER BY updated_at DESC LIMIT 50"
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM forms WHERE user_id = ? ORDER BY updated_at DESC LIMIT 100",
+            (user_id,),
+        ).fetchall()
         return [_parse_form_row(r, conn) for r in rows]
 
 
-def delete_form(form_id: str, user_id: str | None = None) -> bool:
+def delete_form(form_id: str, user_id: str) -> bool:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,)).fetchone()
         if not row:
             return False
-        if row["user_id"] and row["user_id"] != user_id:
-            raise PermissionError("Bạn không có quyền xóa biểu mẫu này.")
-        conn.execute("DELETE FROM forms WHERE id = ?", (form_id,))
+        if row["user_id"] != user_id:
+            raise PermissionError("Bạn không có quyền xóa biểu mẫu của tài khoản khác.")
+        conn.execute("DELETE FROM forms WHERE id = ? AND user_id = ?", (form_id, user_id))
         conn.commit()
         return True
 

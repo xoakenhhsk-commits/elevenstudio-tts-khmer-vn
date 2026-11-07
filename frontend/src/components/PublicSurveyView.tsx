@@ -11,7 +11,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { fetchFormAnalytics, fetchPublicSurvey, submitPublicSurvey } from '../api';
+import { fetchPublicSummary, fetchPublicSurvey, submitPublicSurvey } from '../api';
 import type { FormAnalytics, SurveyForm } from '../types';
 import { BrandLogo } from './BrandLogo';
 
@@ -148,7 +148,7 @@ export function PublicSurveyView({
 
   const handleLoadPublicSummary = async () => {
     if (!form) return;
-    const stats = await fetchFormAnalytics(form.slug);
+    const stats = await fetchPublicSummary(form.slug);
     setPublicSummary(stats);
     setShowingSummary(true);
   };
@@ -662,3 +662,4 @@ export function PublicSurveyView({
     </div>
   );
 }
+

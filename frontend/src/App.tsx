@@ -1,7 +1,9 @@
 import {
   ArrowRight,
   BarChart3,
+  Bot,
   Check,
+  Code2,
   Copy,
   Edit3,
   ExternalLink,
@@ -9,14 +11,17 @@ import {
   FilePlus2,
   Globe,
   Hash,
+  Lock,
   Loader2,
   LogOut,
   Moon,
   Plus,
   QrCode,
   Search,
+  ShieldCheck,
   Sparkles,
   Sun,
+  Terminal,
   Trash2,
   Wifi,
 } from 'lucide-react';
@@ -32,6 +37,7 @@ import {
   logoutUser,
   updateSurveyForm,
 } from './api';
+import { AgentQuickFormModal } from './components/AgentQuickFormModal';
 import { AuthModal } from './components/AuthModal';
 import { BrandLogo } from './components/BrandLogo';
 import { FormBuilderView } from './components/FormBuilderView';
@@ -68,6 +74,12 @@ export function App() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authDefaultMode, setAuthDefaultMode] = useState<'login' | 'register'>('login');
 
+  // Agent & Quick Code Modal
+  const [agentModalOpen, setAgentModalOpen] = useState(false);
+  const [agentInitialTab, setAgentInitialTab] = useState<
+    'ai_prompt' | 'quick_code' | 'agent_api'
+  >('ai_prompt');
+
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [templates, setTemplates] = useState<SurveyTemplate[]>([]);
   const [forms, setForms] = useState<SurveyForm[]>([]);
@@ -96,16 +108,20 @@ export function App() {
 
   const loadDashboardData = useCallback(async () => {
     try {
-      const [srv, tplList, formList, me] = await Promise.all([
+      const [srv, tplList, me] = await Promise.all([
         fetchServerInfo(),
         fetchSurveyTemplates().catch(() => []),
-        fetchMyForms().catch(() => []),
         fetchCurrentUser(),
       ]);
       setServerInfo(srv);
       setTemplates(tplList);
-      setForms(formList);
       setUser(me);
+      if (me) {
+        const myPrivateForms = await fetchMyForms().catch(() => []);
+        setForms(myPrivateForms);
+      } else {
+        setForms([]);
+      }
     } finally {
       setLoadingInitial(false);
     }
@@ -124,6 +140,22 @@ export function App() {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  const requireAuthThen = (action: () => void) => {
+    if (!user) {
+      setAuthDefaultMode('login');
+      setAuthModalOpen(true);
+      return;
+    }
+    action();
+  };
+
+  const openAgentModal = (mode: 'ai_prompt' | 'quick_code' | 'agent_api') => {
+    requireAuthThen(() => {
+      setAgentInitialTab(mode);
+      setAgentModalOpen(true);
+    });
+  };
 
   const openPublicSurvey = (identifier: string) => {
     const clean = identifier.trim();
@@ -144,6 +176,11 @@ export function App() {
   };
 
   const handleCreateBlankForm = async () => {
+    if (!user) {
+      setAuthDefaultMode('login');
+      setAuthModalOpen(true);
+      return;
+    }
     if (creatingId) return;
     setCreatingId('blank');
     try {
@@ -193,6 +230,11 @@ export function App() {
   };
 
   const handleCreateFromTemplate = async (tpl: SurveyTemplate) => {
+    if (!user) {
+      setAuthDefaultMode('login');
+      setAuthModalOpen(true);
+      return;
+    }
     if (creatingId) return;
     setCreatingId(tpl.id);
     try {
@@ -326,7 +368,7 @@ export function App() {
       ? serverInfo.lan_url
       : window.location.origin);
 
-  // 3) HOME & GOOGLE-FORMS-STYLE DASHBOARD
+  // 3) HOME & PRIVATE ACCOUNT DASHBOARD
   return (
     <div
       className={`min-h-screen transition-colors pb-20 ${
@@ -376,8 +418,23 @@ export function App() {
             </div>
           </form>
 
-          {/* Right Controls: Theme + Auth */}
-          <div className="flex items-center gap-2.5">
+          {/* Right Controls: Agent API + Theme + Auth */}
+          <div className="flex items-center gap-2">
+            {user && (
+              <button
+                onClick={() => openAgentModal('agent_api')}
+                title="Lấy API Key & Code Python/cURL cho Agent tự động"
+                className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                  darkMode
+                    ? 'border-zinc-800 bg-zinc-900 text-emerald-400 hover:bg-zinc-800'
+                    : 'border-zinc-200 bg-white text-emerald-700 hover:bg-zinc-50'
+                }`}
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                <span>Agent API</span>
+              </button>
+            )}
+
             <button
               onClick={() => setDarkMode((d) => !d)}
               title="Đổi giao diện Sáng / Tối"
@@ -404,13 +461,13 @@ export function App() {
                   >
                     {user.full_name.charAt(0).toUpperCase()}
                   </span>
-                  <span className="max-w-[110px] truncate">{user.full_name}</span>
+                  <span className="max-w-[120px] truncate">{user.full_name}</span>
                 </div>
                 <button
                   onClick={async () => {
                     await logoutUser();
                     setUser(null);
-                    loadDashboardData();
+                    setForms([]);
                   }}
                   title="Đăng xuất"
                   className={`p-2 rounded-xl border cursor-pointer ${
@@ -456,7 +513,7 @@ export function App() {
         </div>
       </header>
 
-      {/* Hero Banner + Live Public Server Link Strip */}
+      {/* Hero Banner + Fast Agent & Code Form Creation */}
       <section className="max-w-6xl mx-auto px-4 pt-8 pb-6">
         <div
           className={`p-6 sm:p-8 rounded-3xl border relative overflow-hidden ${
@@ -467,51 +524,60 @@ export function App() {
         >
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="max-w-2xl">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 mb-3">
-                <Globe className="w-3.5 h-3.5" />
-                <span>Nền tảng Tạo Khảo Sát &amp; Biểu Mẫu Public Trực Tuyến</span>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 mb-3">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Không gian Khảo sát Riêng Tư theo từng Tài khoản + AI Agent Tạo Nhanh</span>
               </div>
               <h1 className="font-display text-2xl sm:text-4xl font-extrabold tracking-tight leading-tight">
-                Thiết kế biểu mẫu đẹp như Google Forms,{' '}
+                Tạo biểu mẫu bằng{' '}
                 <span className="bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-500 bg-clip-text text-transparent">
-                  xuất bản Link Public ngay lập tức.
+                  AI Agent &amp; Code siêu tốc
                 </span>
+                , xuất bản Link Public tức thì.
               </h1>
               <p
                 className={`mt-2.5 text-sm leading-relaxed ${
                   darkMode ? 'text-zinc-400' : 'text-zinc-600'
                 }`}
               >
-                Tạo câu hỏi trắc nghiệm, hộp kiểm, đánh giá sao, thu thập phản hồi thời gian thực trên SQLite, xem biểu đồ trực quan, quét mã QR và xuất báo cáo Excel (.CSV).
+                Mỗi tài khoản quản lý kho khảo sát riêng biệt (người ngoài không thể xem danh sách của bạn). Khi xuất bản, ai có đường link{' '}
+                <code className="font-mono text-emerald-500">/f/...</code> hoặc mã{' '}
+                <code className="font-mono text-indigo-500">KF-...</code> đều điền được ngay.
               </p>
 
-              <div className="mt-5 flex flex-wrap items-center gap-3">
+              <div className="mt-5 flex flex-wrap items-center gap-2.5">
+                <button
+                  onClick={() => openAgentModal('ai_prompt')}
+                  className="inline-flex items-center gap-2 px-5 py-3 rounded-full text-xs sm:text-sm font-semibold bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-600 hover:opacity-95 text-white shadow-sm transition-all cursor-pointer"
+                >
+                  <Bot className="w-4 h-4" />
+                  Agent Tự Tạo Form Nhanh
+                </button>
+
+                <button
+                  onClick={() => openAgentModal('quick_code')}
+                  className="inline-flex items-center gap-2 px-4 py-3 rounded-full text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all cursor-pointer"
+                >
+                  <Code2 className="w-4 h-4" />
+                  Dán Code Tạo Form
+                </button>
+
                 <button
                   onClick={handleCreateBlankForm}
                   disabled={Boolean(creatingId)}
-                  className="inline-flex items-center gap-2 px-5 py-3 rounded-full text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all cursor-pointer"
+                  className={`inline-flex items-center gap-2 px-4 py-3 rounded-full text-xs sm:text-sm font-semibold border transition-colors cursor-pointer ${
+                    darkMode
+                      ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
+                      : 'border-zinc-200 hover:bg-zinc-50 text-zinc-800'
+                  }`}
                 >
                   {creatingId === 'blank' ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
                     <Plus className="w-4 h-4" />
                   )}
-                  Tạo Khảo Sát Mới Ngay
+                  Tạo thủ công
                 </button>
-
-                {forms[0] && (
-                  <button
-                    onClick={() => openPublicSurvey(forms[0].slug)}
-                    className={`inline-flex items-center gap-2 px-5 py-3 rounded-full text-xs sm:text-sm font-semibold border transition-colors cursor-pointer ${
-                      darkMode
-                        ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
-                        : 'border-zinc-200 hover:bg-zinc-50 text-zinc-800'
-                    }`}
-                  >
-                    <ExternalLink className="w-4 h-4 text-emerald-500" />
-                    Mở thử Form Public mẫu
-                  </button>
-                )}
               </div>
             </div>
 
@@ -544,10 +610,18 @@ export function App() {
                 {activeHostDisplay}
               </div>
 
-              <p className="text-[11px] text-zinc-500 leading-relaxed">
-                Mỗi biểu mẫu khi tạo sẽ tự động có đường dẫn{' '}
-                <code className="font-mono text-indigo-500">/f/ten-khao-sat</code> kèm mã QR để gửi cho mọi người điền.
-              </p>
+              <button
+                type="button"
+                onClick={() => openAgentModal('agent_api')}
+                className={`w-full py-2 px-3 rounded-xl text-[11px] font-semibold border flex items-center justify-center gap-1.5 cursor-pointer ${
+                  darkMode
+                    ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-indigo-400'
+                    : 'border-zinc-200 bg-white hover:bg-zinc-100 text-indigo-600'
+                }`}
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                Xem Code Python / cURL gọi Agent API
+              </button>
             </div>
           </div>
         </div>
@@ -559,24 +633,46 @@ export function App() {
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-indigo-500" />
             <h2 className="font-display font-bold text-base">
-              Khởi tạo nhanh biểu mẫu (Chọn mẫu có sẵn)
+              Khởi tạo nhanh biểu mẫu mới
             </h2>
           </div>
-          <span className="text-xs text-zinc-500">1-Click tự động tạo &amp; Public</span>
+          <span className="text-xs text-zinc-500">Lưu trực tiếp vào tài khoản của bạn</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">
+          {/* AI Agent Quick Card */}
+          <button
+            onClick={() => openAgentModal('ai_prompt')}
+            className={`group text-left p-4 rounded-3xl border-2 flex flex-col justify-between min-h-[164px] transition-all cursor-pointer ${
+              darkMode
+                ? 'border-indigo-500/50 hover:border-indigo-400 bg-indigo-950/25'
+                : 'border-indigo-300 hover:border-indigo-500 bg-indigo-50/50 shadow-2xs'
+            }`}
+          >
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center group-hover:scale-110 transition-transform">
+              <Bot className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-display font-bold text-sm mt-3">
+                AI Agent &amp; Code
+              </div>
+              <div className="text-[11px] text-zinc-500 mt-0.5">
+                Nhập chủ đề hoặc dán Code tạo tự động 100%
+              </div>
+            </div>
+          </button>
+
           {/* Blank Form Card */}
           <button
             onClick={handleCreateBlankForm}
             disabled={Boolean(creatingId)}
-            className={`group text-left p-5 rounded-3xl border-2 border-dashed flex flex-col justify-between min-h-[168px] transition-all cursor-pointer ${
+            className={`group text-left p-4 rounded-3xl border-2 border-dashed flex flex-col justify-between min-h-[164px] transition-all cursor-pointer ${
               darkMode
                 ? 'border-zinc-800 hover:border-indigo-500 bg-zinc-900/50'
                 : 'border-zinc-300 hover:border-indigo-500 bg-white shadow-2xs'
             }`}
           >
-            <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center group-hover:scale-110 transition-transform">
+            <div className="w-10 h-10 rounded-2xl bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 flex items-center justify-center group-hover:scale-110 transition-transform">
               {creatingId === 'blank' ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
@@ -599,7 +695,7 @@ export function App() {
                 key={tpl.id}
                 onClick={() => handleCreateFromTemplate(tpl)}
                 disabled={Boolean(creatingId)}
-                className={`group text-left rounded-3xl border overflow-hidden flex flex-col justify-between min-h-[168px] transition-all cursor-pointer hover:-translate-y-0.5 ${
+                className={`group text-left rounded-3xl border overflow-hidden flex flex-col justify-between min-h-[164px] transition-all cursor-pointer hover:-translate-y-0.5 ${
                   darkMode
                     ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
                     : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-2xs hover:shadow-md'
@@ -611,15 +707,15 @@ export function App() {
                     <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">
                       {tpl.category}
                     </span>
-                    <h3 className="font-display font-bold text-sm mt-1 line-clamp-2">
+                    <h3 className="font-display font-bold text-xs sm:text-sm mt-1 line-clamp-2">
                       {tpl.name}
                     </h3>
                   </div>
 
-                  <div className="mt-3 pt-2.5 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
-                    <span>{tpl.questions.length} câu hỏi</span>
-                    <span className="inline-flex items-center gap-1 font-semibold text-zinc-900 dark:text-white group-hover:translate-x-0.5 transition-transform">
-                      Dùng mẫu <ArrowRight className="w-3 h-3" />
+                  <div className="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
+                    <span>{tpl.questions.length} câu</span>
+                    <span className="inline-flex items-center gap-0.5 font-semibold text-zinc-900 dark:text-white group-hover:translate-x-0.5 transition-transform">
+                      Dùng <ArrowRight className="w-3 h-3" />
                     </span>
                   </div>
                 </div>
@@ -629,240 +725,307 @@ export function App() {
         </div>
       </section>
 
-      {/* MY FORMS & PUBLIC SURVEYS LIST */}
+      {/* STRICT PRIVATE ACCOUNT FORMS LIST */}
       <section className="max-w-6xl mx-auto px-4 pt-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
-          <div>
-            <h2 className="font-display font-bold text-lg">
-              Danh sách Khảo sát &amp; Link Public đang hoạt động ({filteredForms.length})
-            </h2>
-            <p className="text-xs text-zinc-500">
-              Bấm trực tiếp vào đường link xanh bên dưới mỗi thẻ để mở trang điền khảo sát như người dùng thật
-            </p>
-          </div>
-
+        {!user ? (
+          /* LOGGED-OUT PRIVATE GUARD: NEVER SHOW ANYONE ELSE'S FORMS */
           <div
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs sm:w-72 ${
+            className={`p-10 sm:p-12 rounded-3xl border text-center ${
               darkMode
-                ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
-                : 'bg-white border-zinc-200 text-zinc-800'
+                ? 'bg-zinc-900/80 border-zinc-800'
+                : 'bg-white border-zinc-200 shadow-2xs'
             }`}
           >
-            <Search className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm theo tên hoặc mã KF-..."
-              className="bg-transparent outline-none w-full"
-            />
-          </div>
-        </div>
-
-        {loadingInitial ? (
-          <div className="py-16 flex flex-col items-center justify-center gap-2">
-            <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
-            <span className="text-xs text-zinc-500">Đang tải danh sách khảo sát...</span>
-          </div>
-        ) : filteredForms.length === 0 ? (
-          <div
-            className={`p-12 rounded-3xl border text-center ${
-              darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-white border-zinc-200'
-            }`}
-          >
-            <p className="text-sm font-semibold">Chưa tìm thấy biểu mẫu nào phù hợp</p>
-            <button
-              onClick={handleCreateBlankForm}
-              className="mt-4 px-5 py-2.5 rounded-full text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
-            >
-              + Tạo biểu mẫu đầu tiên
-            </button>
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center mx-auto mb-3">
+              <Lock className="w-6 h-6" />
+            </div>
+            <h2 className="font-display font-bold text-xl">
+              Danh sách biểu mẫu được bảo mật riêng theo từng tài khoản
+            </h2>
+            <p className="text-xs sm:text-sm text-zinc-500 mt-2 max-w-lg mx-auto leading-relaxed">
+              Đăng nhập vào tài khoản cá nhân của bạn để xem, chỉnh sửa và lấy Link Public của riêng bạn (không ai khác nhìn thấy danh sách biểu mẫu của bạn tại đây).
+            </p>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <button
+                onClick={() => {
+                  setAuthDefaultMode('login');
+                  setAuthModalOpen(true);
+                }}
+                className="px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+              >
+                Đăng nhập vào tài khoản của tôi
+              </button>
+              <button
+                onClick={() => {
+                  setAuthDefaultMode('register');
+                  setAuthModalOpen(true);
+                }}
+                className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold border cursor-pointer ${
+                  darkMode
+                    ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
+                    : 'border-zinc-200 hover:bg-zinc-50 text-zinc-800'
+                }`}
+              >
+                Tạo tài khoản mới miễn phí
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {filteredForms.map((form) => {
-              const banner = CARD_BANNERS[form.theme_color] || CARD_BANNERS.indigo;
-              const fullPublicUrl = getPublicUrlForSlug(form.slug);
-
-              return (
-                <div
-                  key={form.id}
-                  className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${
-                    darkMode
-                      ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
-                      : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-xs'
-                  }`}
-                >
-                  <div>
-                    <div className={`h-3 bg-gradient-to-r ${banner}`} />
-                    <div className="p-6">
-                      {/* Status & Code Badges */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                              form.is_published
-                                ? 'bg-emerald-500/15 text-emerald-500'
-                                : 'bg-amber-500/15 text-amber-500'
-                            }`}
-                          >
-                            <Globe className="w-3 h-3" />
-                            {form.is_published ? 'Public' : 'Nháp'}
-                          </span>
-                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
-                            {form.access_code}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-zinc-500 font-medium">
-                          <span className="inline-flex items-center gap-1">
-                            <Eye className="w-3.5 h-3.5" /> {form.views_count} lượt xem
-                          </span>
-                          <span className="inline-flex items-center gap-1 font-bold text-indigo-600 dark:text-indigo-400">
-                            <BarChart3 className="w-3.5 h-3.5" /> {form.response_count} phản hồi
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Title & Description */}
-                      <h3
-                        onClick={() => {
-                          setBuilderTab('questions');
-                          setEditingForm(form);
-                        }}
-                        className="font-display font-bold text-lg leading-snug cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
-                      >
-                        {form.title}
-                      </h3>
-                      {form.description && (
-                        <p className="text-xs text-zinc-500 mt-1 line-clamp-2">
-                          {form.description}
-                        </p>
-                      )}
-
-                      {/* Direct Visible Public URL Box */}
-                      <div
-                        className={`mt-4 p-2.5 rounded-2xl border flex items-center justify-between gap-2 ${
-                          darkMode
-                            ? 'bg-zinc-950 border-zinc-800'
-                            : 'bg-emerald-50/60 border-emerald-200/80'
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => openPublicSurvey(form.slug)}
-                          className="text-left font-mono text-xs text-emerald-600 dark:text-emerald-400 underline truncate cursor-pointer flex-1"
-                          title="Bấm để mở trang điền khảo sát Public"
-                        >
-                          {fullPublicUrl}
-                        </button>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => copyPublicLink(form.slug)}
-                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold cursor-pointer ${
-                              darkMode
-                                ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100'
-                                : 'bg-white border border-emerald-200 hover:bg-emerald-100 text-emerald-900'
-                            }`}
-                          >
-                            {copiedSlug === form.slug ? (
-                              <>
-                                <Check className="w-3 h-3 text-emerald-500" /> Đã chép
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3" /> Chép Link
-                              </>
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => openPublicSurvey(form.slug)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                          >
-                            Điền thử <ExternalLink className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card Footer Action Bar */}
-                  <div
-                    className={`px-6 py-3.5 border-t flex flex-wrap items-center justify-between gap-2 ${
-                      darkMode
-                        ? 'bg-zinc-950/40 border-zinc-800'
-                        : 'bg-zinc-50/70 border-zinc-100'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          setBuilderTab('questions');
-                          setEditingForm(form);
-                        }}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                          darkMode
-                            ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-200'
-                            : 'border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-800'
-                        }`}
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        Sửa câu hỏi ({form.questions.length})
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setBuilderTab('responses');
-                          setEditingForm(form);
-                        }}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                          darkMode
-                            ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-200'
-                            : 'border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-800'
-                        }`}
-                      >
-                        <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />
-                        Kết quả ({form.response_count})
-                      </button>
-
-                      <button
-                        onClick={() => setShareModalForm(form)}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                          darkMode
-                            ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-emerald-400'
-                            : 'border-zinc-200 bg-white hover:bg-zinc-100 text-emerald-700'
-                        }`}
-                      >
-                        <QrCode className="w-3.5 h-3.5" />
-                        QR / Nhúng
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleDuplicateForm(form.id)}
-                        title="Nhân bản khảo sát"
-                        className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white cursor-pointer"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteForm(form)}
-                        title="Xóa khảo sát"
-                        className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
+          <>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-display font-bold text-lg">
+                    Biểu mẫu riêng của {user.full_name} ({filteredForms.length})
+                  </h2>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400">
+                    <Lock className="w-3 h-3" />
+                    Chỉ mình tài khoản này thấy
+                  </span>
                 </div>
-              );
-            })}
-          </div>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  Chỉ các khảo sát do chính tài khoản{' '}
+                  <span className="font-semibold">{user.email}</span> tạo mới hiển thị tại đây. Gửi đường link xanh bên dưới cho người tham gia điền.
+                </p>
+              </div>
+
+              <div
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs sm:w-72 ${
+                  darkMode
+                    ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
+                    : 'bg-white border-zinc-200 text-zinc-800'
+                }`}
+              >
+                <Search className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Tìm trong form của bạn (tên / KF-...)"
+                  className="bg-transparent outline-none w-full"
+                />
+              </div>
+            </div>
+
+            {loadingInitial ? (
+              <div className="py-16 flex flex-col items-center justify-center gap-2">
+                <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+                <span className="text-xs text-zinc-500">
+                  Đang tải biểu mẫu riêng của bạn...
+                </span>
+              </div>
+            ) : filteredForms.length === 0 ? (
+              <div
+                className={`p-12 rounded-3xl border text-center ${
+                  darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-white border-zinc-200'
+                }`}
+              >
+                <p className="text-sm font-semibold">
+                  Tài khoản của bạn chưa có biểu mẫu nào khớp tìm kiếm
+                </p>
+                <div className="mt-4 flex items-center justify-center gap-2.5">
+                  <button
+                    onClick={() => openAgentModal('ai_prompt')}
+                    className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    Agent Tạo Nhanh
+                  </button>
+                  <button
+                    onClick={handleCreateBlankForm}
+                    className="px-5 py-2.5 rounded-full text-xs font-semibold border border-zinc-300 dark:border-zinc-700 cursor-pointer"
+                  >
+                    + Tạo biểu mẫu trống
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {filteredForms.map((form) => {
+                  const banner = CARD_BANNERS[form.theme_color] || CARD_BANNERS.indigo;
+                  const fullPublicUrl = getPublicUrlForSlug(form.slug);
+
+                  return (
+                    <div
+                      key={form.id}
+                      className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${
+                        darkMode
+                          ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
+                          : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-xs'
+                      }`}
+                    >
+                      <div>
+                        <div className={`h-3 bg-gradient-to-r ${banner}`} />
+                        <div className="p-6">
+                          {/* Status & Code Badges */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                                  form.is_published
+                                    ? 'bg-emerald-500/15 text-emerald-500'
+                                    : 'bg-amber-500/15 text-amber-500'
+                                }`}
+                              >
+                                <Globe className="w-3 h-3" />
+                                {form.is_published ? 'Link Public Bật' : 'Riêng tư (Nháp)'}
+                              </span>
+                              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
+                                {form.access_code}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-3 text-xs text-zinc-500 font-medium">
+                              <span className="inline-flex items-center gap-1">
+                                <Eye className="w-3.5 h-3.5" /> {form.views_count} lượt mở
+                              </span>
+                              <span className="inline-flex items-center gap-1 font-bold text-indigo-600 dark:text-indigo-400">
+                                <BarChart3 className="w-3.5 h-3.5" /> {form.response_count} phản hồi
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Title & Description */}
+                          <h3
+                            onClick={() => {
+                              setBuilderTab('questions');
+                              setEditingForm(form);
+                            }}
+                            className="font-display font-bold text-lg leading-snug cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                          >
+                            {form.title}
+                          </h3>
+                          {form.description && (
+                            <p className="text-xs text-zinc-500 mt-1 line-clamp-2">
+                              {form.description}
+                            </p>
+                          )}
+
+                          {/* Direct Visible Public URL Box */}
+                          <div
+                            className={`mt-4 p-2.5 rounded-2xl border flex items-center justify-between gap-2 ${
+                              darkMode
+                                ? 'bg-zinc-950 border-zinc-800'
+                                : 'bg-emerald-50/60 border-emerald-200/80'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => openPublicSurvey(form.slug)}
+                              className="text-left font-mono text-xs text-emerald-600 dark:text-emerald-400 underline truncate cursor-pointer flex-1"
+                              title="Bấm để mở trang điền khảo sát Public"
+                            >
+                              {fullPublicUrl}
+                            </button>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => copyPublicLink(form.slug)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold cursor-pointer ${
+                                  darkMode
+                                    ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100'
+                                    : 'bg-white border border-emerald-200 hover:bg-emerald-100 text-emerald-900'
+                                }`}
+                              >
+                                {copiedSlug === form.slug ? (
+                                  <>
+                                    <Check className="w-3 h-3 text-emerald-500" /> Đã chép
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3 h-3" /> Chép Link
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => openPublicSurvey(form.slug)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                              >
+                                Điền thử <ExternalLink className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Footer Action Bar */}
+                      <div
+                        className={`px-6 py-3.5 border-t flex flex-wrap items-center justify-between gap-2 ${
+                          darkMode
+                            ? 'bg-zinc-950/40 border-zinc-800'
+                            : 'bg-zinc-50/70 border-zinc-100'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setBuilderTab('questions');
+                              setEditingForm(form);
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
+                              darkMode
+                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-200'
+                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-800'
+                            }`}
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            Sửa ({form.questions.length})
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setBuilderTab('responses');
+                              setEditingForm(form);
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
+                              darkMode
+                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-200'
+                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-800'
+                            }`}
+                          >
+                            <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />
+                            Kết quả ({form.response_count})
+                          </button>
+
+                          <button
+                            onClick={() => setShareModalForm(form)}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
+                              darkMode
+                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-emerald-400'
+                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-emerald-700'
+                            }`}
+                          >
+                            <QrCode className="w-3.5 h-3.5" />
+                            QR / Nhúng
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleDuplicateForm(form.id)}
+                            title="Nhân bản khảo sát"
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteForm(form)}
+                            title="Xóa khảo sát"
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </section>
 
@@ -875,6 +1038,23 @@ export function App() {
         onSuccess={(u) => {
           setUser(u);
           loadDashboardData();
+        }}
+      />
+
+      <AgentQuickFormModal
+        open={agentModalOpen}
+        initialTab={agentInitialTab}
+        user={user}
+        serverInfo={serverInfo}
+        darkMode={darkMode}
+        onClose={() => setAgentModalOpen(false)}
+        onFormCreated={(newForm) => {
+          setForms((prev) => [newForm, ...prev]);
+          setBuilderTab('questions');
+          setEditingForm(newForm);
+        }}
+        onUserKeyUpdated={(newKey) => {
+          setUser((prev) => (prev ? { ...prev, agent_api_key: newKey } : prev));
         }}
       />
 

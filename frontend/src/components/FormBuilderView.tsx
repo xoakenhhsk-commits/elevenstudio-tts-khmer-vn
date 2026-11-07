@@ -8,6 +8,7 @@ import {
   CheckSquare,
   ChevronDown,
   CircleDot,
+  Code2,
   Copy,
   ExternalLink,
   Eye,
@@ -26,7 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { useState } from 'react';
-import { updateSurveyForm } from '../api';
+import { importFormFromCode, updateSurveyForm } from '../api';
 import type { Question, QuestionType, ServerInfo, SurveyForm, ThemeColor } from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ResponsesAnalyticsView } from './ResponsesAnalyticsView';
@@ -127,6 +128,30 @@ export function FormBuilderView({
   const [saving, setSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [showBatchCode, setShowBatchCode] = useState(false);
+  const [batchCodeText, setBatchCodeText] = useState('');
+  const [batchImporting, setBatchImporting] = useState(false);
+
+  const handleAppendQuestionsFromCode = async () => {
+    if (!batchCodeText.trim() || batchImporting) return;
+    setBatchImporting(true);
+    try {
+      const res = await importFormFromCode({
+        code: batchCodeText,
+        parse_only: true,
+      });
+      const parsedQuestions = res.parsed?.questions || [];
+      if (parsedQuestions.length > 0) {
+        patchLocalForm({ questions: [...form.questions, ...parsedQuestions] });
+        setBatchCodeText('');
+        setShowBatchCode(false);
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Cú pháp Code không hợp lệ');
+    } finally {
+      setBatchImporting(false);
+    }
+  };
 
   const currentTheme =
     THEME_OPTIONS.find((t) => t.id === form.theme_color) || THEME_OPTIONS[0];
@@ -785,7 +810,60 @@ export function FormBuilderView({
                 <CheckSquare className="w-3.5 h-3.5 text-emerald-500" />
                 + Hộp kiểm
               </button>
+              <button
+                type="button"
+                onClick={() => setShowBatchCode((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+              >
+                <Code2 className="w-3.5 h-3.5" />
+                + Dán Code thêm nhiều câu
+              </button>
             </div>
+
+            {showBatchCode && (
+              <div
+                className={`p-5 rounded-3xl border space-y-3 ${
+                  darkMode ? 'bg-zinc-900 border-indigo-500/50' : 'bg-white border-indigo-300 shadow-sm'
+                }`}
+              >
+                <div className="text-xs font-semibold">
+                  Dán nhanh danh sách câu hỏi (Mỗi dòng 1 câu, ví dụ:{' '}
+                  <code className="font-mono text-indigo-500">
+                    Bạn thích tính năng nào? * | radio: Giao diện đẹp, Tốc độ nhanh, Dễ dùng
+                  </code>
+                  )
+                </div>
+                <textarea
+                  rows={5}
+                  value={batchCodeText}
+                  onChange={(e) => setBatchCodeText(e.target.value)}
+                  placeholder={`Họ và tên * | text\nĐánh giá chung * | rating: 5\nKênh biết đến | radio: Facebook, Google, Bạn bè`}
+                  className="w-full p-3.5 rounded-2xl font-mono text-xs bg-zinc-950 text-emerald-300 border border-zinc-800 outline-none"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowBatchCode(false)}
+                    className="px-3.5 py-2 rounded-xl text-xs font-semibold text-zinc-500 cursor-pointer"
+                  >
+                    Đóng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAppendQuestionsFromCode}
+                    disabled={batchImporting || !batchCodeText.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer disabled:opacity-50"
+                  >
+                    {batchImporting ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="w-3.5 h-3.5" />
+                    )}
+                    Chèn vào biểu mẫu hiện tại
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -903,3 +981,4 @@ export function FormBuilderView({
     </div>
   );
 }
+

@@ -129,7 +129,17 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
   }
 }
 
-// ==================== TEMPLATES & FORMS ====================
+export async function regenerateAgentKey(): Promise<string> {
+  const res = await apiFetch('/api/auth/regenerate-agent-key', {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tạo mới API Key' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tạo mới Agent Key');
+  return data.agent_api_key;
+}
+
+// ==================== TEMPLATES & PRIVATE ACCOUNT FORMS ====================
 
 export async function fetchSurveyTemplates(): Promise<SurveyTemplate[]> {
   const res = await apiFetch('/api/templates');
@@ -139,14 +149,8 @@ export async function fetchSurveyTemplates(): Promise<SurveyTemplate[]> {
 }
 
 export async function fetchMyForms(): Promise<SurveyForm[]> {
+  if (!getStoredToken()) return [];
   const res = await apiFetch('/api/forms', { headers: authHeaders() });
-  if (!res.ok) throw new Error('Không thể tải danh sách biểu mẫu');
-  const data = await res.json();
-  return data.forms;
-}
-
-export async function fetchPublicFeed(): Promise<SurveyForm[]> {
-  const res = await apiFetch('/api/forms/public-feed');
   if (!res.ok) return [];
   const data = await res.json();
   return data.forms;
@@ -162,6 +166,38 @@ export async function createSurveyForm(
   });
   const data = await res.json().catch(() => ({ detail: 'Lỗi tạo biểu mẫu' }));
   if (!res.ok) throw new Error(data.detail || 'Không thể tạo biểu mẫu');
+  return data;
+}
+
+export async function agentGenerateForm(payload: {
+  prompt: string;
+  question_count: number;
+  theme_color: string;
+  is_published?: boolean;
+}): Promise<{ form: SurveyForm; public_url: string; generator_engine: string }> {
+  const res = await apiFetch('/api/forms/agent-generate', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi AI Agent tạo form' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tạo biểu mẫu bằng Agent');
+  return data;
+}
+
+export async function importFormFromCode(payload: {
+  code: string;
+  theme_color?: string;
+  is_published?: boolean;
+  parse_only?: boolean;
+}): Promise<{ form?: SurveyForm; parsed?: Partial<SurveyForm>; public_url?: string }> {
+  const res = await apiFetch('/api/forms/import-code', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi biên dịch Code sang Form' }));
+  if (!res.ok) throw new Error(data.detail || 'Cú pháp Code không hợp lệ');
   return data;
 }
 
@@ -184,8 +220,9 @@ export async function duplicateSurveyForm(formId: string): Promise<SurveyForm> {
     method: 'POST',
     headers: authHeaders(),
   });
-  if (!res.ok) throw new Error('Không thể nhân bản biểu mẫu');
-  return res.json();
+  const data = await res.json().catch(() => ({ detail: 'Lỗi nhân bản' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể nhân bản biểu mẫu');
+  return data;
 }
 
 export async function deleteSurveyForm(formId: string): Promise<void> {
@@ -230,6 +267,13 @@ export async function submitPublicSurvey(
   return data;
 }
 
+export async function fetchPublicSummary(identifier: string): Promise<FormAnalytics> {
+  const res = await apiFetch(`/api/public/forms/${encodeURIComponent(identifier)}/summary`);
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tải tóm tắt' }));
+  if (!res.ok) throw new Error(data.detail || 'Biểu mẫu không công khai thống kê');
+  return data;
+}
+
 export async function fetchFormAnalytics(identifier: string): Promise<FormAnalytics> {
   const res = await apiFetch(`/api/forms/${encodeURIComponent(identifier)}/analytics`, {
     headers: authHeaders(),
@@ -251,5 +295,7 @@ export async function deleteResponseItem(
 }
 
 export function getCsvExportUrl(formId: string): string {
-  return `${resolvedBaseUrl}/api/forms/${formId}/export.csv`;
+  const token = getStoredToken();
+  const q = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${resolvedBaseUrl}/api/forms/${formId}/export.csv${q}`;
 }

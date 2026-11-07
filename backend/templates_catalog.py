@@ -195,3 +195,4 @@ SURVEY_TEMPLATES: list[dict[str, Any]] = [
         ],
     },
 ]
+

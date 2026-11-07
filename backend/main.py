@@ -6,7 +6,7 @@ import csv
 import os
 import socket
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,88 +22,29 @@ from database import (
     delete_session,
     get_form_by_id,
     get_form_by_slug_or_code,
+    get_user_by_agent_key,
     get_user_by_token,
     init_db,
-    list_forms,
+    list_forms_for_owner,
     list_responses,
+    regenerate_user_agent_key,
     submit_response,
     update_form,
 )
+from form_agent import generate_form_from_prompt, parse_quick_code_to_form
 from templates_catalog import SURVEY_TEMPLATES
-
-
-def _seed_demo_survey_if_empty() -> None:
-    existing = list_forms(public_only=True)
-    if existing:
-        return
-    tpl = SURVEY_TEMPLATES[0]
-    demo = create_form(
-        {
-            "title": tpl["title"],
-            "description": tpl["description"],
-            "theme_color": tpl["theme_color"],
-            "thank_you_message": tpl["thank_you_message"],
-            "is_published": True,
-            "accepting_responses": True,
-            "allow_public_summary": True,
-            "questions": tpl["questions"],
-        },
-        user_id=None,
-    )
-    # Seed 4 realistic sample responses so charts look great out of the box
-    sample_submissions = [
-        (
-            "Nguyễn Minh Anh",
-            "minhanh@example.com",
-            {
-                "q_rating_overall": 5,
-                "q_source": "Mạng xã hội (Facebook, TikTok, Instagram)",
-                "q_liked_features": [
-                    "Giao diện đẹp, dễ sử dụng",
-                    "Tốc độ phản hồi và xử lý nhanh",
-                ],
-                "q_feedback_text": "Giao diện cực kỳ sạch sẽ và hiện đại hơn Google Forms truyền thống!",
-            },
-        ),
-        (
-            "Trần Quốc Bảo",
-            "quocbao@example.com",
-            {
-                "q_rating_overall": 5,
-                "q_source": "Bạn bè / Đồng nghiệp giới thiệu",
-                "q_liked_features": [
-                    "Giao diện đẹp, dễ sử dụng",
-                    "Giá cả hợp lý / Miễn phí",
-                ],
-                "q_feedback_text": "Chia sẻ link public và xuất Excel rất tiện lợi.",
-            },
-        ),
-        (
-            "Lê Thảo Vy",
-            "thaovy@example.com",
-            {
-                "q_rating_overall": 4,
-                "q_source": "Tìm kiếm Google",
-                "q_liked_features": ["Đội ngũ hỗ trợ nhiệt tình", "Tốc độ phản hồi và xử lý nhanh"],
-                "q_feedback_text": "Nên thêm nhiều màu sắc chủ đề hơn nữa nhé!",
-            },
-        ),
-    ]
-    for name, email, ans in sample_submissions:
-        submit_response(demo["id"], ans, name, email)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    _seed_demo_survey_if_empty()
     yield
 
 
 app = FastAPI(
     title="KromaForms Studio API",
-    description="Modern Full-Stack Survey & Public Form Builder Platform (Google Forms + ElevenLabs Minimalist UI/UX)",
-    version="3.0.0",
+    description="Private Multi-Tenant Survey & Public Form Builder Platform with AI Agent Quick Generator",
+    version="3.1.0",
     lifespan=lifespan,
 )
 
@@ -137,6 +78,19 @@ def get_public_tunnel_url() -> str | None:
         if content.startswith("http"):
             return content.rstrip("/")
     return None
+
+
+def build_public_survey_urls(slug: str) -> dict[str, str]:
+    lan_ip = get_lan_ip()
+    tunnel = get_public_tunnel_url()
+    local_base = "http://localhost:5173"
+    lan_base = f"http://{lan_ip}:5173"
+    primary_base = tunnel or (lan_base if lan_ip != "127.0.0.1" else local_base)
+    return {
+        "public_url": f"{primary_base}/f/{slug}",
+        "local_url": f"{local_base}/f/{slug}",
+        "lan_url": f"{lan_base}/f/{slug}",
+    }
 
 
 # ==================== SCHEMAS ====================
@@ -176,6 +130,31 @@ class FormPayload(BaseModel):
     questions: list[QuestionItem] = Field(default_factory=list)
 
 
+class AgentGenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=2, max_length=1500)
+    question_count: int = Field(default=6, ge=2, le=15)
+    theme_color: str = Field(default="indigo")
+    is_published: bool = Field(default=True)
+
+
+class ImportCodeRequest(BaseModel):
+    code: str = Field(..., min_length=3, max_length=20000)
+    theme_color: str = Field(default="indigo")
+    is_published: bool = Field(default=True)
+    parse_only: bool = Field(default=False)
+
+
+class ExternalAgentQuickCreateRequest(BaseModel):
+    prompt: str | None = Field(default=None)
+    code: str | None = Field(default=None)
+    question_count: int = Field(default=6, ge=2, le=15)
+    title: str | None = Field(default=None)
+    description: str = Field(default="")
+    theme_color: str = Field(default="indigo")
+    is_published: bool = Field(default=True)
+    questions: list[dict[str, Any]] | None = Field(default=None)
+
+
 class SubmitSurveyRequest(BaseModel):
     respondent_name: str | None = Field(default=None, max_length=120)
     respondent_email: str | None = Field(default=None, max_length=120)
@@ -184,19 +163,30 @@ class SubmitSurveyRequest(BaseModel):
 
 # ==================== AUTH HELPERS ====================
 
-def extract_bearer_token(authorization: str | None = Header(default=None)) -> str | None:
-    if not authorization:
-        return None
-    parts = authorization.strip().split(" ", 1)
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        return parts[1].strip()
+def extract_auth_credentials(
+    authorization: str | None = Header(default=None),
+    x_agent_key: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+) -> str | None:
+    if x_agent_key and x_agent_key.strip():
+        return x_agent_key.strip()
+    if authorization:
+        parts = authorization.strip().split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+    if token and token.strip():
+        return token.strip()
     return None
 
 
-def get_optional_user(token: str | None = Depends(extract_bearer_token)) -> dict[str, Any] | None:
-    if not token:
+def get_optional_user(
+    cred: str | None = Depends(extract_auth_credentials),
+) -> dict[str, Any] | None:
+    if not cred:
         return None
-    return get_user_by_token(token)
+    if cred.startswith("kf_agent_"):
+        return get_user_by_agent_key(cred)
+    return get_user_by_token(cred)
 
 
 def get_required_user(
@@ -205,9 +195,20 @@ def get_required_user(
     if not user:
         raise HTTPException(
             status_code=401,
-            detail="Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.",
+            detail="Vui lòng đăng nhập tài khoản (hoặc truyền X-Agent-Key) để thực hiện thao tác này.",
         )
     return user
+
+
+def _assert_form_owner(form: dict[str, Any] | None, user: dict[str, Any]) -> dict[str, Any]:
+    if not form:
+        raise HTTPException(status_code=404, detail="Không tìm thấy biểu mẫu.")
+    if form.get("user_id") != user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Biểu mẫu này thuộc tài khoản khác. Bạn không có quyền truy cập quản trị.",
+        )
+    return form
 
 
 # ==================== SYSTEM & AUTH ENDPOINTS ====================
@@ -217,6 +218,7 @@ async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "app": "KromaForms Studio",
+        "version": "3.1.0",
         "lan_ip": get_lan_ip(),
         "public_tunnel_url": get_public_tunnel_url(),
     }
@@ -256,9 +258,11 @@ async def login_account(req: LoginRequest) -> dict[str, Any]:
 
 
 @app.post("/api/auth/logout")
-async def logout_account(token: str | None = Depends(extract_bearer_token)) -> dict[str, Any]:
-    if token:
-        delete_session(token)
+async def logout_account(
+    cred: str | None = Depends(extract_auth_credentials),
+) -> dict[str, Any]:
+    if cred and not cred.startswith("kf_agent_"):
+        delete_session(cred)
     return {"logged_out": True}
 
 
@@ -267,36 +271,35 @@ async def get_me(user: dict[str, Any] = Depends(get_required_user)) -> dict[str,
     return {"user": user}
 
 
-# ==================== TEMPLATES & FORMS ENDPOINTS ====================
+@app.post("/api/auth/regenerate-agent-key")
+async def rotate_agent_api_key(
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    new_key = regenerate_user_agent_key(user["id"])
+    return {"agent_api_key": new_key}
+
+
+# ==================== TEMPLATES & PRIVATE ACCOUNT FORMS ====================
 
 @app.get("/api/templates")
 async def get_survey_templates() -> dict[str, Any]:
     return {"templates": SURVEY_TEMPLATES}
 
 
-@app.get("/api/forms/public-feed")
-async def get_public_forms() -> dict[str, Any]:
-    forms = list_forms(public_only=True)
-    return {"forms": forms}
-
-
 @app.get("/api/forms")
-async def get_my_forms(
+async def get_my_private_forms(
     user: dict[str, Any] | None = Depends(get_optional_user),
 ) -> dict[str, Any]:
-    if user:
-        my_forms = list_forms(user_id=user["id"])
-        guest_forms = list_forms(user_id=None)
-        seen = {f["id"] for f in my_forms}
-        combined = my_forms + [g for g in guest_forms if g["id"] not in seen]
-        return {"forms": combined}
-    return {"forms": list_forms(user_id=None)}
+    """Strictly return ONLY forms belonging to the logged-in account."""
+    if not user:
+        return {"forms": []}
+    return {"forms": list_forms_for_owner(user["id"])}
 
 
 @app.post("/api/forms")
 async def create_new_form(
     payload: FormPayload,
-    user: dict[str, Any] | None = Depends(get_optional_user),
+    user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
     data = payload.model_dump()
     if not data["questions"]:
@@ -311,28 +314,129 @@ async def create_new_form(
                 "max_rating": 5,
             }
         ]
-    created = create_form(data, user_id=user["id"] if user else None)
-    return created
+    return create_form(data, user_id=user["id"])
 
+
+# ==================== AI AGENT & QUICK CODE FORM GENERATOR ====================
+
+@app.post("/api/forms/agent-generate")
+async def agent_generate_survey(
+    req: AgentGenerateRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    generated = generate_form_from_prompt(
+        prompt=req.prompt,
+        question_count=req.question_count,
+        theme_color=req.theme_color,
+    )
+    engine = generated.pop("generator_engine", "smart_agent")
+    generated["is_published"] = req.is_published
+    generated["accepting_responses"] = True
+    generated["allow_public_summary"] = True
+    saved_form = create_form(generated, user_id=user["id"])
+    urls = build_public_survey_urls(saved_form["slug"])
+    return {
+        "form": saved_form,
+        "generator_engine": engine,
+        **urls,
+    }
+
+
+@app.post("/api/forms/import-code")
+async def import_survey_from_quick_code(
+    req: ImportCodeRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    try:
+        parsed = parse_quick_code_to_form(req.code, default_theme=req.theme_color)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if req.parse_only:
+        return {"parsed": parsed}
+
+    parsed["is_published"] = req.is_published
+    parsed["accepting_responses"] = True
+    parsed["allow_public_summary"] = True
+    saved_form = create_form(parsed, user_id=user["id"])
+    urls = build_public_survey_urls(saved_form["slug"])
+    return {
+        "form": saved_form,
+        **urls,
+    }
+
+
+@app.post("/api/agent/quick-create")
+async def external_agent_quick_create(
+    req: ExternalAgentQuickCreateRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    """
+    Programmatic endpoint for external AI Agents / Python / cURL scripts using X-Agent-Key.
+    Accepts `prompt` OR `code` OR explicit `title` + `questions`.
+    """
+    if req.code and req.code.strip():
+        try:
+            form_data = parse_quick_code_to_form(req.code, default_theme=req.theme_color)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif req.prompt and req.prompt.strip():
+        form_data = generate_form_from_prompt(
+            prompt=req.prompt,
+            question_count=req.question_count,
+            theme_color=req.theme_color,
+        )
+        form_data.pop("generator_engine", None)
+    elif req.questions:
+        form_data = {
+            "title": req.title or "Biểu mẫu tạo tự động qua Agent API",
+            "description": req.description,
+            "theme_color": req.theme_color,
+            "questions": req.questions,
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Vui lòng truyền 'prompt', 'code', hoặc 'questions' trong body JSON.",
+        )
+
+    if req.title:
+        form_data["title"] = req.title
+    form_data["is_published"] = req.is_published
+    form_data["accepting_responses"] = True
+    form_data["allow_public_summary"] = True
+
+    created = create_form(form_data, user_id=user["id"])
+    urls = build_public_survey_urls(created["slug"])
+    return {
+        "ok": True,
+        "owner_email": user["email"],
+        "access_code": created["access_code"],
+        "slug": created["slug"],
+        **urls,
+        "form": created,
+    }
+
+
+# ==================== OWNER-ONLY FORM OPERATIONS ====================
 
 @app.get("/api/forms/{form_id}")
-async def get_single_form(form_id: str) -> dict[str, Any]:
+async def get_single_form(
+    form_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
     form = get_form_by_id(form_id)
-    if not form:
-        raise HTTPException(status_code=404, detail="Không tìm thấy biểu mẫu.")
-    return form
+    return _assert_form_owner(form, user)
 
 
 @app.put("/api/forms/{form_id}")
 async def save_form_changes(
     form_id: str,
     payload: FormPayload,
-    user: dict[str, Any] | None = Depends(get_optional_user),
+    user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
     try:
-        updated = update_form(
-            form_id, payload.model_dump(), user_id=user["id"] if user else None
-        )
+        updated = update_form(form_id, payload.model_dump(), user_id=user["id"])
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not updated:
@@ -343,11 +447,9 @@ async def save_form_changes(
 @app.post("/api/forms/{form_id}/duplicate")
 async def duplicate_existing_form(
     form_id: str,
-    user: dict[str, Any] | None = Depends(get_optional_user),
+    user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
-    original = get_form_by_id(form_id)
-    if not original:
-        raise HTTPException(status_code=404, detail="Không tìm thấy biểu mẫu gốc.")
+    original = _assert_form_owner(get_form_by_id(form_id), user)
     copy_data = {
         "title": f"{original['title']} (Bản sao)",
         "description": original["description"],
@@ -359,16 +461,16 @@ async def duplicate_existing_form(
         "allow_public_summary": original["allow_public_summary"],
         "questions": original["questions"],
     }
-    return create_form(copy_data, user_id=user["id"] if user else None)
+    return create_form(copy_data, user_id=user["id"])
 
 
 @app.delete("/api/forms/{form_id}")
 async def remove_form(
     form_id: str,
-    user: dict[str, Any] | None = Depends(get_optional_user),
+    user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
     try:
-        ok = delete_form(form_id, user_id=user["id"] if user else None)
+        ok = delete_form(form_id, user_id=user["id"])
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not ok:
@@ -386,7 +488,10 @@ async def fetch_public_form(identifier: str) -> dict[str, Any]:
             status_code=404,
             detail="Biểu mẫu này không tồn tại hoặc đã tạm ngừng công khai (Private).",
         )
-    return form
+    # Strip internal owner user_id when returning to public respondents
+    public_copy = dict(form)
+    public_copy.pop("user_id", None)
+    return public_copy
 
 
 @app.post("/api/public/forms/{identifier}/submit")
@@ -402,7 +507,6 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
     if form["collect_email"] and not (req.respondent_email or "").strip():
         raise HTTPException(status_code=400, detail="Vui lòng nhập địa chỉ Email của bạn.")
 
-    # Validate required questions
     for q in form["questions"]:
         if q.get("required"):
             val = req.answers.get(q["id"])
@@ -433,7 +537,9 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
 
 # ==================== ANALYTICS & EXPORT ====================
 
-def _build_question_analytics(form: dict[str, Any], responses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_question_analytics(
+    form: dict[str, Any], responses: list[dict[str, Any]], include_open_text: bool = True
+) -> list[dict[str, Any]]:
     stats_list: list[dict[str, Any]] = []
     for q in form["questions"]:
         qid = q["id"]
@@ -505,20 +611,40 @@ def _build_question_analytics(form: dict[str, Any], responses: list[dict[str, An
                 }
                 for k, v in counts.items()
             ]
-        else:
+        elif include_open_text:
             q_stat["text_answers"] = [str(v) for v in answered_values[:50]]
 
         stats_list.append(q_stat)
     return stats_list
 
 
-@app.get("/api/forms/{identifier}/analytics")
-async def get_form_analytics(identifier: str) -> dict[str, Any]:
+@app.get("/api/public/forms/{identifier}/summary")
+async def get_public_form_summary(identifier: str) -> dict[str, Any]:
+    """Aggregated chart summary for respondents (ONLY if enabled by form owner; hides emails/names)."""
     form = get_form_by_slug_or_code(identifier, increment_view=False)
-    if not form:
-        raise HTTPException(status_code=404, detail="Không tìm thấy biểu mẫu.")
+    if not form or not form["is_published"] or not form["allow_public_summary"]:
+        raise HTTPException(
+            status_code=403, detail="Biểu mẫu này không công khai kết quả thống kê."
+        )
     responses = list_responses(form["id"])
-    question_stats = _build_question_analytics(form, responses)
+    question_stats = _build_question_analytics(form, responses, include_open_text=False)
+    return {
+        "total_responses": len(responses),
+        "views_count": form["views_count"],
+        "completion_rate": 100.0,
+        "question_stats": question_stats,
+        "responses": [],
+    }
+
+
+@app.get("/api/forms/{identifier}/analytics")
+async def get_owner_form_analytics(
+    identifier: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    form = _assert_form_owner(get_form_by_slug_or_code(identifier, increment_view=False), user)
+    responses = list_responses(form["id"])
+    question_stats = _build_question_analytics(form, responses, include_open_text=True)
     completion_rate = (
         round((len(responses) / max(1, form["views_count"])) * 100, 1)
         if form["views_count"] > 0
@@ -535,14 +661,14 @@ async def get_form_analytics(identifier: str) -> dict[str, Any]:
 
 
 @app.get("/api/forms/{form_id}/export.csv")
-async def export_responses_csv(form_id: str):
-    form = get_form_by_id(form_id)
-    if not form:
-        raise HTTPException(status_code=404, detail="Không tìm thấy biểu mẫu.")
+async def export_responses_csv(
+    form_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+):
+    form = _assert_form_owner(get_form_by_id(form_id), user)
     responses = list_responses(form_id)
 
     buf = StringIO()
-    # Write UTF-8 BOM so Excel opens Vietnamese characters cleanly
     buf.write("\ufeff")
     writer = csv.writer(buf)
 
@@ -575,14 +701,18 @@ async def export_responses_csv(form_id: str):
 
 
 @app.delete("/api/forms/{form_id}/responses/{response_id}")
-async def remove_single_response(form_id: str, response_id: str) -> dict[str, Any]:
+async def remove_single_response(
+    form_id: str,
+    response_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    _assert_form_owner(get_form_by_id(form_id), user)
     ok = delete_response(response_id, form_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Không tìm thấy phản hồi.")
     return {"deleted": True, "id": response_id}
 
 
-# Serve built frontend in production with SPA history fallback for /f/:slug
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
