@@ -13,6 +13,7 @@ import {
   Globe,
   GraduationCap,
   Hash,
+  LayoutGrid,
   Loader2,
   Lock,
   LogOut,
@@ -31,10 +32,12 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  assignFormToClassroom,
   createSurveyForm,
   deleteSurveyForm,
   duplicateSurveyForm,
   fetchCurrentUser,
+  fetchMyClassrooms,
   fetchMyForms,
   fetchServerInfo,
   fetchSurveyTemplates,
@@ -44,20 +47,37 @@ import {
 import { AgentQuickFormModal } from './components/AgentQuickFormModal';
 import { AuthModal } from './components/AuthModal';
 import { BrandLogo } from './components/BrandLogo';
+import { ClassroomsManagerView } from './components/ClassroomsManagerView';
 import { FormBuilderView } from './components/FormBuilderView';
+import { PublicClassroomView } from './components/PublicClassroomView';
 import { PublicSurveyView } from './components/PublicSurveyView';
 import { SharePublishModal } from './components/SharePublishModal';
-import type { AuthUser, ServerInfo, SurveyForm, SurveyTemplate } from './types';
+import type {
+  AuthUser,
+  Classroom,
+  ServerInfo,
+  SurveyForm,
+  SurveyTemplate,
+} from './types';
 
-function parsePublicIdentifierFromLocation(): string | null {
+function parseRouteFromLocation(): {
+  formId: string | null;
+  classroomCode: string | null;
+} {
   const path = window.location.pathname;
   if (path.startsWith('/f/')) {
     const slug = decodeURIComponent(path.slice(3).replace(/\/+$/, ''));
-    if (slug) return slug;
+    if (slug) return { formId: slug, classroomCode: null };
+  }
+  if (path.startsWith('/c/')) {
+    const code = decodeURIComponent(path.slice(3).replace(/\/+$/, ''));
+    if (code) return { formId: null, classroomCode: code };
   }
   const params = new URLSearchParams(window.location.search);
   const qForm = params.get('form');
-  return qForm ? qForm.trim() : null;
+  const qClass = params.get('class');
+  if (qClass) return { formId: null, classroomCode: qClass.trim() };
+  return { formId: qForm ? qForm.trim() : null, classroomCode: null };
 }
 
 const CARD_BANNERS: Record<string, string> = {
@@ -84,16 +104,26 @@ export function App() {
     'ai_prompt' | 'quick_code' | 'agent_api'
   >('ai_prompt');
   const [agentQuizDefault, setAgentQuizDefault] = useState(true);
+  const [agentDefaultClassroomId, setAgentDefaultClassroomId] = useState<string | null>(
+    null
+  );
 
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [templates, setTemplates] = useState<SurveyTemplate[]>([]);
   const [forms, setForms] = useState<SurveyForm[]>([]);
+  const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
+  // Main Workspace Tab: 'forms' | 'classrooms'
+  const [workspaceTab, setWorkspaceTab] = useState<'forms' | 'classrooms'>('forms');
+
   // Routing & Active Views
-  const [publicIdentifier, setPublicIdentifier] = useState<string | null>(() =>
-    parsePublicIdentifierFromLocation()
+  const [publicIdentifier, setPublicIdentifier] = useState<string | null>(
+    () => parseRouteFromLocation().formId
+  );
+  const [publicClassroomCode, setPublicClassroomCode] = useState<string | null>(
+    () => parseRouteFromLocation().classroomCode
   );
   const [editingForm, setEditingForm] = useState<SurveyForm | null>(null);
   const [builderTab, setBuilderTab] = useState<'questions' | 'responses' | 'settings'>(
@@ -104,6 +134,7 @@ export function App() {
   // Dashboard filters & quick code lookup
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'quiz' | 'survey'>('all');
+  const [classroomFilter, setClassroomFilter] = useState<string>('all');
   const [quickCode, setQuickCode] = useState('');
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
 
@@ -123,10 +154,15 @@ export function App() {
       setTemplates(tplList);
       setUser(me);
       if (me) {
-        const myPrivateForms = await fetchMyForms().catch(() => []);
+        const [myPrivateForms, myClasses] = await Promise.all([
+          fetchMyForms().catch(() => []),
+          fetchMyClassrooms().catch(() => []),
+        ]);
         setForms(myPrivateForms);
+        setClassrooms(myClasses);
       } else {
         setForms([]);
+        setClassrooms([]);
       }
     } finally {
       setLoadingInitial(false);
@@ -139,9 +175,10 @@ export function App() {
 
   useEffect(() => {
     const onPopState = () => {
-      const id = parsePublicIdentifierFromLocation();
-      setPublicIdentifier(id);
-      if (id) setEditingForm(null);
+      const r = parseRouteFromLocation();
+      setPublicIdentifier(r.formId);
+      setPublicClassroomCode(r.classroomCode);
+      if (r.formId || r.classroomCode) setEditingForm(null);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -158,11 +195,13 @@ export function App() {
 
   const openAgentModal = (
     mode: 'ai_prompt' | 'quick_code' | 'agent_api',
-    quizDefault = true
+    quizDefault = true,
+    classroomId: string | null = null
   ) => {
     requireAuthThen(() => {
       setAgentInitialTab(mode);
       setAgentQuizDefault(quizDefault);
+      setAgentDefaultClassroomId(classroomId);
       setAgentModalOpen(true);
     });
   };
@@ -170,9 +209,24 @@ export function App() {
   const openPublicSurvey = (identifier: string) => {
     const clean = identifier.trim();
     if (!clean) return;
+    if (clean.toUpperCase().startsWith('KL-')) {
+      openPublicClassroom(clean);
+      return;
+    }
     window.history.pushState({}, '', `/f/${encodeURIComponent(clean)}`);
     setEditingForm(null);
+    setPublicClassroomCode(null);
     setPublicIdentifier(clean);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const openPublicClassroom = (roomCode: string) => {
+    const clean = roomCode.trim();
+    if (!clean) return;
+    window.history.pushState({}, '', `/c/${encodeURIComponent(clean)}`);
+    setEditingForm(null);
+    setPublicIdentifier(null);
+    setPublicClassroomCode(clean);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -181,11 +235,12 @@ export function App() {
       window.history.pushState({}, '', '/');
     }
     setPublicIdentifier(null);
+    setPublicClassroomCode(null);
     setEditingForm(null);
     loadDashboardData();
   };
 
-  const handleCreateHomeworkQuiz = async () => {
+  const handleCreateHomeworkQuiz = async (targetClassroom?: Classroom) => {
     if (!user) {
       setAuthDefaultMode('login');
       setAuthModalOpen(true);
@@ -194,11 +249,14 @@ export function App() {
     if (creatingId) return;
     setCreatingId('homework');
     try {
+      const clsTitleSuffix = targetClassroom ? ` — ${targetClassroom.name}` : '';
       const created = await createSurveyForm({
-        title: 'Bài Tập Kiểm Tra Mới (Thang điểm 10)',
-        description:
-          'Học sinh chọn hoặc nhập đúng Họ và tên trước khi làm bài. Không thoát ứng dụng trong quá trình làm bài!',
-        theme_color: 'indigo',
+        classroom_id: targetClassroom?.id || null,
+        title: `Bài Tập Kiểm Tra 15 Phút${clsTitleSuffix}`,
+        description: targetClassroom
+          ? `Bài tập giao cho học sinh ${targetClassroom.name}. Chọn đúng Họ và tên trong danh sách lớp trước khi làm bài!`
+          : 'Học sinh chọn hoặc nhập đúng Họ và tên trước khi làm bài. Không thoát ứng dụng trong quá trình làm bài!',
+        theme_color: (targetClassroom?.theme_color as string) || 'indigo',
         is_published: true,
         accepting_responses: true,
         allow_public_summary: false,
@@ -206,7 +264,10 @@ export function App() {
         time_limit_minutes: 15,
         anti_cheat_enabled: true,
         max_violations: 3,
+        max_attempts: 1,
         show_score_immediately: true,
+        strict_roster: Boolean(targetClassroom && targetClassroom.student_count > 0),
+        student_roster: targetClassroom?.student_names || [],
         questions: [
           {
             id: 'q_hw_1',
@@ -326,6 +387,22 @@ export function App() {
     }
   };
 
+  const handleQuickAssignCardClassroom = async (
+    formId: string,
+    nextClassroomId: string
+  ) => {
+    try {
+      const cls = classrooms.find((c) => c.id === nextClassroomId);
+      const updated = await assignFormToClassroom(formId, {
+        classroom_id: nextClassroomId || null,
+        strict_roster: Boolean(cls && cls.student_count > 0),
+      });
+      setForms((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Không thể gắn lớp cho bài tập');
+    }
+  };
+
   const handleDuplicateForm = async (formId: string) => {
     try {
       const copy = await duplicateSurveyForm(formId);
@@ -376,7 +453,20 @@ export function App() {
     setTimeout(() => setCopiedSlug(null), 1800);
   };
 
-  // 1) PUBLIC STUDENT / RESPONDENT ROUTE (/f/:slug)
+  // 1A) PUBLIC CLASSROOM PORTAL ROUTE (/c/:roomCode)
+  if (publicClassroomCode) {
+    return (
+      <PublicClassroomView
+        roomCode={publicClassroomCode}
+        darkMode={darkMode}
+        onToggleDarkMode={() => setDarkMode((d) => !d)}
+        onBackHome={backToHome}
+        onOpenAssignment={(slug) => openPublicSurvey(slug)}
+      />
+    );
+  }
+
+  // 1B) PUBLIC STUDENT / RESPONDENT ROUTE (/f/:slug)
   if (publicIdentifier) {
     return (
       <PublicSurveyView
@@ -395,6 +485,7 @@ export function App() {
         <FormBuilderView
           initialForm={editingForm}
           initialTab={builderTab}
+          classrooms={classrooms}
           serverInfo={serverInfo}
           darkMode={darkMode}
           onToggleDarkMode={() => setDarkMode((d) => !d)}
@@ -423,11 +514,13 @@ export function App() {
   const filteredForms = forms.filter((f) => {
     if (typeFilter === 'quiz' && !f.is_quiz) return false;
     if (typeFilter === 'survey' && f.is_quiz) return false;
+    if (classroomFilter !== 'all' && f.classroom_id !== classroomFilter) return false;
     const q = searchQuery.trim().toLowerCase();
     if (!q) return true;
     return (
       f.title.toLowerCase().includes(q) ||
       f.access_code.toLowerCase().includes(q) ||
+      (f.classroom_name || '').toLowerCase().includes(q) ||
       f.slug.toLowerCase().includes(q)
     );
   });
@@ -438,10 +531,10 @@ export function App() {
       ? serverInfo.lan_url
       : window.location.origin);
 
-  // 3) RESPONSIVE HOME & CLASSROOM / SURVEY DASHBOARD
+  // 3) MOBILE-FIRST CLASSROOM & SURVEY DASHBOARD
   return (
     <div
-      className={`min-h-screen transition-colors pb-20 ${
+      className={`min-h-screen transition-colors pb-24 md:pb-20 ${
         darkMode
           ? 'bg-zinc-950 text-zinc-100 bg-dot-grid-dark'
           : 'bg-zinc-50/80 text-zinc-900 bg-dot-grid-light'
@@ -450,11 +543,47 @@ export function App() {
       {/* Top Sticky Responsive Navbar */}
       <header
         className={`sticky top-0 z-30 border-b backdrop-blur-xl ${
-          darkMode ? 'bg-zinc-950/90 border-zinc-800' : 'bg-white/90 border-zinc-200'
+          darkMode ? 'bg-zinc-950/92 border-zinc-800' : 'bg-white/92 border-zinc-200'
         }`}
       >
-        <div className="max-w-6xl mx-auto px-3.5 sm:px-4 h-15 sm:h-16 flex items-center justify-between gap-2">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2">
           <BrandLogo darkMode={darkMode} size="sm" onClick={backToHome} />
+
+          {/* Desktop Workspace Switcher */}
+          {user && (
+            <div
+              className={`hidden md:inline-flex items-center p-1 rounded-2xl border ${
+                darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-zinc-100 border-zinc-200'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setWorkspaceTab('forms')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-all ${
+                  workspaceTab === 'forms'
+                    ? darkMode
+                      ? 'bg-zinc-800 text-white shadow-xs'
+                      : 'bg-white text-zinc-950 shadow-xs'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Kho Đề &amp; Khảo Sát ({forms.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setWorkspaceTab('classrooms')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-all ${
+                  workspaceTab === 'classrooms'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                Lớp Học &amp; DS Tên ({classrooms.length})
+              </button>
+            </div>
+          )}
 
           {/* Desktop Quick Code Input */}
           <form
@@ -462,7 +591,7 @@ export function App() {
               e.preventDefault();
               if (quickCode.trim()) openPublicSurvey(quickCode.trim());
             }}
-            className="hidden md:flex items-center gap-1.5"
+            className="hidden lg:flex items-center gap-1.5"
           >
             <div
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs ${
@@ -476,14 +605,14 @@ export function App() {
                 type="text"
                 value={quickCode}
                 onChange={(e) => setQuickCode(e.target.value)}
-                placeholder="Nhập mã bài tập / KF-..."
+                placeholder="Mã đề KF-... / Mã lớp KL-..."
                 className="bg-transparent outline-none w-44 font-mono text-xs"
               />
               <button
                 type="submit"
                 className="px-2.5 py-1 rounded-full font-semibold bg-indigo-600 text-white cursor-pointer text-[11px]"
               >
-                Vào làm
+                Mở
               </button>
             </div>
           </form>
@@ -494,7 +623,7 @@ export function App() {
               <button
                 onClick={() => openAgentModal('agent_api', true)}
                 title="Agent API Key"
-                className={`hidden lg:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                className={`hidden xl:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
                   darkMode
                     ? 'border-zinc-800 bg-zinc-900 text-emerald-400 hover:bg-zinc-800'
                     : 'border-zinc-200 bg-white text-emerald-700 hover:bg-zinc-50'
@@ -508,7 +637,7 @@ export function App() {
             <button
               onClick={() => setDarkMode((d) => !d)}
               title="Đổi giao diện Sáng / Tối"
-              className={`p-2 sm:p-2.5 rounded-xl border transition-colors cursor-pointer ${
+              className={`p-2 rounded-xl border transition-colors cursor-pointer ${
                 darkMode
                   ? 'border-zinc-800 bg-zinc-900 text-amber-400 hover:bg-zinc-800'
                   : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100'
@@ -520,7 +649,7 @@ export function App() {
             {user ? (
               <div className="flex items-center gap-1.5">
                 <div
-                  className={`flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-full border text-xs font-semibold ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-xs font-semibold ${
                     darkMode
                       ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
                       : 'bg-white border-zinc-200 text-zinc-800'
@@ -531,7 +660,7 @@ export function App() {
                   >
                     {user.full_name.charAt(0).toUpperCase()}
                   </span>
-                  <span className="max-w-[85px] sm:max-w-[130px] truncate">
+                  <span className="max-w-[76px] sm:max-w-[120px] truncate">
                     {user.full_name}
                   </span>
                 </div>
@@ -540,6 +669,7 @@ export function App() {
                     await logoutUser();
                     setUser(null);
                     setForms([]);
+                    setClassrooms([]);
                   }}
                   title="Đăng xuất"
                   className={`p-2 rounded-xl border cursor-pointer ${
@@ -558,7 +688,7 @@ export function App() {
                     setAuthDefaultMode('login');
                     setAuthModalOpen(true);
                   }}
-                  className={`px-3 py-2 rounded-full text-xs font-semibold cursor-pointer ${
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer ${
                     darkMode
                       ? 'text-zinc-300 hover:bg-zinc-900'
                       : 'text-zinc-700 hover:bg-zinc-100'
@@ -571,7 +701,7 @@ export function App() {
                     setAuthDefaultMode('register');
                     setAuthModalOpen(true);
                   }}
-                  className={`px-3.5 py-2 rounded-full text-xs font-semibold cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer ${
                     darkMode
                       ? 'bg-white text-zinc-950 hover:bg-zinc-200'
                       : 'bg-zinc-950 text-white hover:bg-zinc-800'
@@ -584,14 +714,14 @@ export function App() {
           </div>
         </div>
 
-        {/* Mobile Quick Exam Code Lookup Bar */}
-        <div className="md:hidden px-3.5 pb-2.5">
+        {/* Mobile Quick Exam / Classroom Code Bar */}
+        <div className="lg:hidden px-3 pb-2.5">
           <form
             onSubmit={(e) => {
               e.preventDefault();
               if (quickCode.trim()) openPublicSurvey(quickCode.trim());
             }}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-xs ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs ${
               darkMode
                 ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
                 : 'bg-zinc-100/90 border-zinc-200 text-zinc-800'
@@ -602,588 +732,689 @@ export function App() {
               type="text"
               value={quickCode}
               onChange={(e) => setQuickCode(e.target.value)}
-              placeholder="Học sinh nhập mã bài tập (VD: KF-...)"
+              placeholder="Nhập mã đề (KF-...) hoặc mã lớp (KL-...)"
               className="bg-transparent outline-none flex-1 font-mono text-xs"
             />
             <button
               type="submit"
-              className="px-3 py-1 rounded-xl font-bold bg-indigo-600 text-white text-[11px] shrink-0"
+              className="px-3.5 py-1.5 rounded-xl font-bold bg-indigo-600 text-white text-[11px] shrink-0 active:scale-95"
             >
-              Vào thi
+              Vào ngay
             </button>
           </form>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <section className="max-w-6xl mx-auto px-3.5 sm:px-4 pt-5 sm:pt-8 pb-4 sm:pb-6">
-        <div
-          className={`p-5 sm:p-8 rounded-3xl border relative overflow-hidden ${
-            darkMode
-              ? 'bg-zinc-900/90 border-zinc-800'
-              : 'bg-white border-zinc-200/90 shadow-xs'
-          }`}
-        >
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-            <div className="max-w-2xl">
-              <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 mb-3">
-                <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                <span>Giao Bài Tập Chấm Điểm Thang 10 • Chống Thoát App • Khảo Sát Public</span>
-              </div>
-              <h1 className="font-display text-2xl sm:text-4xl font-extrabold tracking-tight leading-tight">
-                Soạn giao bài tập &amp; khảo sát với{' '}
-                <span className="bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-500 bg-clip-text text-transparent">
-                  Bảng điểm riêng &amp; Chống gian lận.
-                </span>
-              </h1>
-              <p
-                className={`mt-2.5 text-xs sm:text-sm leading-relaxed ${
-                  darkMode ? 'text-zinc-400' : 'text-zinc-600'
-                }`}
-              >
-                Tự động chấm điểm trắc nghiệm &amp; điền từ, nhập danh sách tên học sinh của lớp, vào điểm riêng từng em, đếm ngược thời gian và tự động cảnh báo / thu bài nếu học sinh thoát màn hình hoặc chuyển ứng dụng.
-              </p>
-
-              {/* Responsive Action Buttons */}
-              <div className="mt-5 grid grid-cols-1 xs:grid-cols-2 sm:flex sm:flex-wrap items-center gap-2.5">
-                <button
-                  onClick={handleCreateHomeworkQuiz}
-                  disabled={Boolean(creatingId)}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl sm:rounded-full text-xs sm:text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition-all cursor-pointer"
-                >
-                  {creatingId === 'homework' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <GraduationCap className="w-4 h-4" />
-                  )}
-                  Soạn Bài Tập Chấm Điểm
-                </button>
-
-                <button
-                  onClick={() => openAgentModal('ai_prompt', true)}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-2xl sm:rounded-full text-xs sm:text-sm font-bold bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-95 text-white shadow-sm transition-all cursor-pointer"
-                >
-                  <Bot className="w-4 h-4" />
-                  AI Agent Tự Ra Đề
-                </button>
-
-                <button
-                  onClick={() => openAgentModal('quick_code', true)}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-2xl sm:rounded-full text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all cursor-pointer"
-                >
-                  <Code2 className="w-4 h-4" />
-                  Dán Code Đề Thi
-                </button>
-
-                <button
-                  onClick={handleCreateBlankForm}
-                  disabled={Boolean(creatingId)}
-                  className={`inline-flex items-center justify-center gap-1.5 px-4 py-3 rounded-2xl sm:rounded-full text-xs sm:text-sm font-semibold border transition-colors cursor-pointer ${
-                    darkMode
-                      ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
-                      : 'border-zinc-200 hover:bg-zinc-50 text-zinc-800'
-                  }`}
-                >
-                  <Plus className="w-4 h-4" />
-                  Form Khảo Sát
-                </button>
-              </div>
-            </div>
-
-            {/* Live Server Link Box */}
+      {/* ==================== TAB B: CLASSROOMS & STUDENT ROSTERS MANAGER ==================== */}
+      {user && workspaceTab === 'classrooms' ? (
+        <main className="max-w-6xl mx-auto px-3 sm:px-4 pt-4 sm:pt-7">
+          <ClassroomsManagerView
+            classrooms={classrooms}
+            forms={forms}
+            serverInfo={serverInfo}
+            darkMode={darkMode}
+            onClassroomsChange={setClassrooms}
+            onFormUpdated={(updated) =>
+              setForms((prev) => prev.map((f) => (f.id === updated.id ? updated : f)))
+            }
+            onCreateHomeworkForClass={(cls) => handleCreateHomeworkQuiz(cls)}
+            onOpenAiForClass={(cls) => openAgentModal('ai_prompt', true, cls.id)}
+            onOpenFormBuilder={(f, tab = 'questions') => {
+              setBuilderTab(tab);
+              setEditingForm(f);
+            }}
+            onOpenPublicClassroom={(code) => openPublicClassroom(code)}
+          />
+        </main>
+      ) : (
+        /* ==================== TAB A: HOME & HOMEWORK / SURVEYS DASHBOARD ==================== */
+        <>
+          {/* Compact Mobile-Optimized Hero Section */}
+          <section className="max-w-6xl mx-auto px-3 sm:px-4 pt-4 sm:pt-7 pb-3 sm:pb-5">
             <div
-              className={`lg:w-80 p-4 rounded-2xl border shrink-0 space-y-2.5 ${
+              className={`p-4 sm:p-7 rounded-3xl border relative overflow-hidden ${
                 darkMode
-                  ? 'bg-zinc-950/90 border-zinc-800'
-                  : 'bg-zinc-50/90 border-zinc-200'
+                  ? 'bg-zinc-900/90 border-zinc-800'
+                  : 'bg-white border-zinc-200/90 shadow-xs'
               }`}
             >
-              <div className="flex items-center justify-between text-xs font-semibold">
-                <span className="inline-flex items-center gap-1.5 text-emerald-500">
-                  <Wifi className="w-3.5 h-3.5" />
-                  {serverInfo?.public_tunnel_url
-                    ? 'Link Public Toàn Cầu Đang Mở'
-                    : 'Máy chủ Web Public Đang Chạy'}
-                </span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-              </div>
-
-              <div
-                className={`px-3 py-2 rounded-xl font-mono text-[11px] border truncate ${
-                  darkMode
-                    ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
-                    : 'bg-white border-zinc-200 text-zinc-800'
-                }`}
-                title={activeHostDisplay}
-              >
-                {activeHostDisplay}
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5 text-center pt-0.5">
-                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-500 text-[10px] font-bold">
-                  Chấm Điểm 10
-                </div>
-                <div className="p-2 rounded-xl bg-rose-500/10 text-rose-500 text-[10px] font-bold">
-                  Chống Thoát App
-                </div>
-                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500 text-[10px] font-bold">
-                  DS Lớp &amp; Excel
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* TEMPLATE GALLERY (Responsive Horizontal Scroll on Mobile, Grid on Tablet/Desktop) */}
-      <section className="max-w-6xl mx-auto px-3.5 sm:px-4 py-3">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-indigo-500" />
-            <h2 className="font-display font-bold text-sm sm:text-base">
-              Kho mẫu Bài tập Kiểm tra &amp; Khảo sát dựng sẵn
-            </h2>
-          </div>
-          <span className="text-[11px] text-zinc-500 hidden sm:inline">
-            1-Click khởi tạo vào tài khoản riêng
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-6 gap-3">
-          {/* Blank Homework Card */}
-          <button
-            onClick={handleCreateHomeworkQuiz}
-            disabled={Boolean(creatingId)}
-            className={`group text-left p-4 rounded-3xl border-2 flex flex-col justify-between min-h-[152px] transition-all cursor-pointer ${
-              darkMode
-                ? 'border-indigo-500/50 hover:border-indigo-400 bg-indigo-950/25'
-                : 'border-indigo-300 hover:border-indigo-500 bg-indigo-50/50 shadow-2xs'
-            }`}
-          >
-            <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center group-hover:scale-110 transition-transform">
-              <GraduationCap className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-display font-bold text-sm mt-2.5">
-                Đề Kiểm Tra Trống
-              </div>
-              <div className="text-[11px] text-zinc-500 mt-0.5">
-                Tự chấm điểm + Chống thoát màn hình
-              </div>
-            </div>
-          </button>
-
-          {/* Blank Survey Card */}
-          <button
-            onClick={handleCreateBlankForm}
-            disabled={Boolean(creatingId)}
-            className={`group text-left p-4 rounded-3xl border-2 border-dashed flex flex-col justify-between min-h-[152px] transition-all cursor-pointer ${
-              darkMode
-                ? 'border-zinc-800 hover:border-emerald-500 bg-zinc-900/50'
-                : 'border-zinc-300 hover:border-emerald-500 bg-white shadow-2xs'
-            }`}
-          >
-            <div className="w-10 h-10 rounded-2xl bg-emerald-500/15 text-emerald-500 flex items-center justify-center group-hover:scale-110 transition-transform">
-              <FilePlus2 className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-display font-bold text-sm mt-2.5">Khảo Sát Trống</div>
-              <div className="text-[11px] text-zinc-500 mt-0.5">
-                Thu thập ý kiến không chấm điểm
-              </div>
-            </div>
-          </button>
-
-          {/* Pre-built Templates */}
-          {templates.map((tpl) => {
-            const banner = CARD_BANNERS[tpl.theme_color] || CARD_BANNERS.indigo;
-            return (
-              <button
-                key={tpl.id}
-                onClick={() => handleCreateFromTemplate(tpl)}
-                disabled={Boolean(creatingId)}
-                className={`group text-left rounded-3xl border overflow-hidden flex flex-col justify-between min-h-[152px] transition-all cursor-pointer hover:-translate-y-0.5 ${
-                  darkMode
-                    ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
-                    : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-2xs hover:shadow-md'
-                }`}
-              >
-                <div className={`h-2.5 w-full bg-gradient-to-r ${banner}`} />
-                <div className="p-3.5 flex-1 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 truncate">
-                        {tpl.category}
-                      </span>
-                      {tpl.anti_cheat_enabled && (
-                        <ShieldAlert className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                      )}
-                    </div>
-                    <h3 className="font-display font-bold text-xs sm:text-sm mt-1 line-clamp-2">
-                      {tpl.name}
-                    </h3>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+                <div className="max-w-2xl">
+                  <div className="inline-flex flex-wrap items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 mb-2.5">
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                    <span>Tạo Lớp &amp; DS Tên • Giao Bài Chấm Điểm • Chống Thoát App</span>
                   </div>
-
-                  <div className="mt-2.5 pt-2 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
-                    <span>{tpl.questions.length} câu</span>
-                    <span className="inline-flex items-center gap-0.5 font-semibold text-zinc-900 dark:text-white">
-                      Dùng <ArrowRight className="w-3 h-3" />
+                  <h1 className="font-display text-xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight leading-tight">
+                    Quản lý Lớp học, Giao bài tập &amp;{' '}
+                    <span className="bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-500 bg-clip-text text-transparent">
+                      Chấm điểm chống gian lận.
                     </span>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </section>
+                  </h1>
+                  <p
+                    className={`mt-2 text-xs sm:text-sm leading-relaxed ${
+                      darkMode ? 'text-zinc-400' : 'text-zinc-600'
+                    }`}
+                  >
+                    Tạo lớp học với danh sách họ tên học sinh, giao đề kiểm tra theo từng lớp, giám sát thoát màn hình trên điện thoại và xuất Sổ điểm tổng hợp cả lớp.
+                  </p>
 
-      {/* STRICT PRIVATE ACCOUNT FORMS & HOMEWORK LIST */}
-      <section className="max-w-6xl mx-auto px-3.5 sm:px-4 pt-5">
-        {!user ? (
-          <div
-            className={`p-8 sm:p-12 rounded-3xl border text-center ${
-              darkMode
-                ? 'bg-zinc-900/80 border-zinc-800'
-                : 'bg-white border-zinc-200 shadow-2xs'
-            }`}
-          >
-            <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center mx-auto mb-3">
-              <Lock className="w-6 h-6" />
-            </div>
-            <h2 className="font-display font-bold text-lg sm:text-xl">
-              Kho Bài Tập &amp; Khảo Sát Bảo Mật Theo Tài Khoản Riêng
-            </h2>
-            <p className="text-xs sm:text-sm text-zinc-500 mt-2 max-w-lg mx-auto leading-relaxed">
-              Đăng nhập tài khoản Giáo viên / Người tạo để quản lý đề bài, danh sách học sinh và bảng điểm riêng (người khác không thể nhìn thấy danh sách đề của bạn).
-            </p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              <button
-                onClick={() => {
-                  setAuthDefaultMode('login');
-                  setAuthModalOpen(true);
-                }}
-                className="px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
-              >
-                Đăng nhập tài khoản
-              </button>
-              <button
-                onClick={() => {
-                  setAuthDefaultMode('register');
-                  setAuthModalOpen(true);
-                }}
-                className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-semibold border cursor-pointer ${
-                  darkMode
-                    ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-200'
-                    : 'border-zinc-200 hover:bg-zinc-50 text-zinc-800'
-                }`}
-              >
-                Đăng ký miễn phí
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* Filter & Search Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="font-display font-bold text-base sm:text-lg">
-                    Kho Bài tập &amp; Khảo sát của {user.full_name} ({filteredForms.length})
-                  </h2>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400">
-                    <Lock className="w-3 h-3" />
-                    Riêng tư
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-                {/* Category Filter Tabs */}
-                <div
-                  className={`inline-flex p-1 rounded-2xl border ${
-                    darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'
-                  }`}
-                >
-                  {[
-                    { id: 'all', label: 'Tất cả' },
-                    { id: 'quiz', label: 'Bài tập chấm điểm' },
-                    { id: 'survey', label: 'Khảo sát' },
-                  ].map((f) => (
+                  {/* Mobile 2x2 Touch Grid / Desktop Pill Row */}
+                  <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
                     <button
-                      key={f.id}
-                      onClick={() => setTypeFilter(f.id as typeof typeFilter)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                        typeFilter === f.id
-                          ? 'bg-indigo-600 text-white'
-                          : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200'
+                      onClick={() => handleCreateHomeworkQuiz()}
+                      disabled={Boolean(creatingId)}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer active:scale-[0.99]"
+                    >
+                      {creatingId === 'homework' ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <GraduationCap className="w-4 h-4 shrink-0" />
+                      )}
+                      <span>Giao Bài Tập</span>
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        requireAuthThen(() => setWorkspaceTab('classrooms'))
+                      }
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-5 py-3 rounded-2xl text-xs sm:text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm cursor-pointer active:scale-[0.99]"
+                    >
+                      <Users className="w-4 h-4 shrink-0" />
+                      <span>Tạo Lớp &amp; DS Tên</span>
+                    </button>
+
+                    <button
+                      onClick={() => openAgentModal('ai_prompt', true)}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-3 rounded-2xl text-xs sm:text-sm font-bold bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-sm cursor-pointer active:scale-[0.99]"
+                    >
+                      <Bot className="w-4 h-4 shrink-0" />
+                      <span>AI Ra Đề Nhanh</span>
+                    </button>
+
+                    <button
+                      onClick={() => openAgentModal('quick_code', true)}
+                      className={`inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-3 rounded-2xl text-xs sm:text-sm font-bold border cursor-pointer active:scale-[0.99] ${
+                        darkMode
+                          ? 'border-zinc-700 bg-zinc-950 text-zinc-200'
+                          : 'border-zinc-200 bg-zinc-50 text-zinc-800'
                       }`}
                     >
-                      {f.label}
+                      <Code2 className="w-4 h-4 text-indigo-500 shrink-0" />
+                      <span>Dán Code Đề</span>
                     </button>
-                  ))}
+                  </div>
                 </div>
 
-                {/* Search Input */}
+                {/* Live Server Link Box */}
                 <div
-                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs sm:w-64 ${
+                  className={`lg:w-80 p-3.5 sm:p-4 rounded-2xl border shrink-0 space-y-2 ${
                     darkMode
-                      ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
-                      : 'bg-white border-zinc-200 text-zinc-800'
+                      ? 'bg-zinc-950/90 border-zinc-800'
+                      : 'bg-zinc-50/90 border-zinc-200'
                   }`}
                 >
-                  <Search className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Tìm tên bài tập hoặc KF-..."
-                    className="bg-transparent outline-none w-full"
-                  />
+                  <div className="flex items-center justify-between text-xs font-semibold">
+                    <span className="inline-flex items-center gap-1.5 text-emerald-500">
+                      <Wifi className="w-3.5 h-3.5" />
+                      {serverInfo?.public_tunnel_url
+                        ? 'Link Public HTTPS Đang Hoạt Động'
+                        : 'Máy chủ Web Public Đang Chạy'}
+                    </span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                  </div>
+
+                  <div
+                    className={`px-3 py-2 rounded-xl font-mono text-[11px] border truncate ${
+                      darkMode
+                        ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
+                        : 'bg-white border-zinc-200 text-zinc-800'
+                    }`}
+                    title={activeHostDisplay}
+                  >
+                    {activeHostDisplay}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1.5 text-center">
+                    <div className="p-1.5 rounded-xl bg-indigo-500/10 text-indigo-500 text-[10px] font-bold">
+                      {classrooms.length} Lớp học
+                    </div>
+                    <div className="p-1.5 rounded-xl bg-rose-500/10 text-rose-500 text-[10px] font-bold">
+                      Chống Thoát App
+                    </div>
+                    <div className="p-1.5 rounded-xl bg-emerald-500/10 text-emerald-500 text-[10px] font-bold">
+                      Sổ Điểm CSV
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+          </section>
 
-            {loadingInitial ? (
-              <div className="py-16 flex flex-col items-center justify-center gap-2">
-                <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
-                <span className="text-xs text-zinc-500">Đang tải dữ liệu...</span>
+          {/* HORIZONTAL SCROLLABLE TEMPLATE STRIP ON MOBILE / GRID ON DESKTOP */}
+          <section className="max-w-6xl mx-auto px-3 sm:px-4 py-2">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                <h2 className="font-display font-bold text-sm sm:text-base">
+                  Mẫu Bài tập &amp; Khảo sát 1-chạm
+                </h2>
               </div>
-            ) : filteredForms.length === 0 ? (
-              <div
-                className={`p-10 rounded-3xl border text-center ${
-                  darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-white border-zinc-200'
+              <button
+                onClick={handleCreateBlankForm}
+                className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+              >
+                + Tạo khảo sát trống
+              </button>
+            </div>
+
+            <div className="flex lg:grid lg:grid-cols-5 gap-3 overflow-x-auto no-scrollbar pb-2">
+              <button
+                onClick={() => handleCreateHomeworkQuiz()}
+                disabled={Boolean(creatingId)}
+                className={`min-w-[190px] lg:min-w-0 shrink-0 text-left p-4 rounded-3xl border-2 flex flex-col justify-between min-h-[132px] transition-all cursor-pointer ${
+                  darkMode
+                    ? 'border-indigo-500/50 bg-indigo-950/25'
+                    : 'border-indigo-300 bg-indigo-50/60'
                 }`}
               >
-                <p className="text-sm font-semibold">
-                  Chưa có bài tập / biểu mẫu nào trong mục này
-                </p>
-                <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white flex items-center justify-center">
+                  <FilePlus2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="font-display font-bold text-xs sm:text-sm mt-2">
+                    Đề Kiểm Tra Trống
+                  </div>
+                  <div className="text-[11px] text-zinc-500 mt-0.5">
+                    Thang 10đ + Chống gian lận
+                  </div>
+                </div>
+              </button>
+
+              {templates.map((tpl) => {
+                const banner = CARD_BANNERS[tpl.theme_color] || CARD_BANNERS.indigo;
+                return (
                   <button
-                    onClick={handleCreateHomeworkQuiz}
-                    className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-xs font-semibold bg-indigo-600 text-white cursor-pointer"
+                    key={tpl.id}
+                    onClick={() => handleCreateFromTemplate(tpl)}
+                    disabled={Boolean(creatingId)}
+                    className={`min-w-[210px] lg:min-w-0 shrink-0 text-left rounded-3xl border overflow-hidden flex flex-col justify-between min-h-[132px] transition-all cursor-pointer ${
+                      darkMode
+                        ? 'bg-zinc-900/90 border-zinc-800'
+                        : 'bg-white border-zinc-200 shadow-2xs'
+                    }`}
                   >
-                    <GraduationCap className="w-4 h-4" />
-                    + Soạn Bài Tập Mới
+                    <div className={`h-2 w-full bg-gradient-to-r ${banner}`} />
+                    <div className="p-3.5 flex-1 flex flex-col justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase text-indigo-500">
+                          {tpl.category}
+                        </span>
+                        <h3 className="font-display font-bold text-xs sm:text-sm mt-0.5 line-clamp-2">
+                          {tpl.name}
+                        </h3>
+                      </div>
+                      <div className="mt-2 pt-1.5 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
+                        <span>{tpl.questions.length} câu</span>
+                        <span className="inline-flex items-center gap-0.5 font-bold text-indigo-500">
+                          Dùng mẫu <ArrowRight className="w-3 h-3" />
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* PRIVATE ACCOUNT FORMS & CLASSROOM ASSIGNMENTS LIST */}
+          <section className="max-w-6xl mx-auto px-3 sm:px-4 pt-3 sm:pt-4">
+            {!user ? (
+              <div
+                className={`p-7 sm:p-12 rounded-3xl border text-center ${
+                  darkMode
+                    ? 'bg-zinc-900/80 border-zinc-800'
+                    : 'bg-white border-zinc-200 shadow-2xs'
+                }`}
+              >
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 text-indigo-500 flex items-center justify-center mx-auto mb-3">
+                  <Lock className="w-6 h-6" />
+                </div>
+                <h2 className="font-display font-bold text-lg sm:text-xl">
+                  Đăng Nhập Để Tạo Lớp Học, Giao Bài Tập &amp; Lưu Bảng Điểm Riêng
+                </h2>
+                <p className="text-xs sm:text-sm text-zinc-500 mt-2 max-w-lg mx-auto">
+                  Mỗi giáo viên sở hữu danh sách Lớp học, Đề kiểm tra và Bảng điểm hoàn toàn riêng tư.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    onClick={() => {
+                      setAuthDefaultMode('login');
+                      setAuthModalOpen(true);
+                    }}
+                    className="px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold bg-indigo-600 text-white cursor-pointer"
+                  >
+                    Đăng nhập ngay
                   </button>
                   <button
-                    onClick={() => openAgentModal('ai_prompt', true)}
-                    className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-xs font-semibold border border-zinc-300 dark:border-zinc-700 cursor-pointer"
+                    onClick={() => {
+                      setAuthDefaultMode('register');
+                      setAuthModalOpen(true);
+                    }}
+                    className={`px-6 py-2.5 rounded-full text-xs sm:text-sm font-bold border cursor-pointer ${
+                      darkMode ? 'border-zinc-700 text-zinc-200' : 'border-zinc-200 text-zinc-800'
+                    }`}
                   >
-                    <Bot className="w-3.5 h-3.5" />
-                    AI Soạn Đề Nhanh
+                    Đăng ký miễn phí
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5">
-                {filteredForms.map((form) => {
-                  const banner = CARD_BANNERS[form.theme_color] || CARD_BANNERS.indigo;
-                  const fullPublicUrl = getPublicUrlForSlug(form.slug);
+              <>
+                {/* Mobile-Friendly Filters & Class Selector */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-display font-bold text-base sm:text-lg">
+                      Đề &amp; Bài tập của {user.full_name} ({filteredForms.length})
+                    </h2>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-500">
+                      <Lock className="w-3 h-3" /> Riêng tư
+                    </span>
+                  </div>
 
-                  return (
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    {/* Type Filter Scrollable Pills */}
                     <div
-                      key={form.id}
-                      className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${
-                        darkMode
-                          ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
-                          : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-xs'
+                      className={`flex items-center gap-1 p-1 rounded-2xl border overflow-x-auto no-scrollbar ${
+                        darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200'
                       }`}
                     >
-                      <div>
-                        <div className={`h-3 bg-gradient-to-r ${banner}`} />
-                        <div className="p-5 sm:p-6">
-                          {/* Top Feature Badges */}
-                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {form.is_quiz ? (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400">
-                                  <GraduationCap className="w-3.5 h-3.5" />
-                                  Bài tập Chấm điểm
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-500">
-                                  <Globe className="w-3 h-3" />
-                                  Khảo sát
-                                </span>
-                              )}
+                      {[
+                        { id: 'all', label: 'Tất cả' },
+                        { id: 'quiz', label: 'Bài tập chấm điểm' },
+                        { id: 'survey', label: 'Khảo sát' },
+                      ].map((f) => (
+                        <button
+                          key={f.id}
+                          onClick={() => setTypeFilter(f.id as typeof typeFilter)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                            typeFilter === f.id
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200'
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
 
-                              {form.anti_cheat_enabled && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-500">
-                                  <ShieldAlert className="w-3 h-3" />
-                                  Chống thoát App
-                                </span>
-                              )}
-
-                              {form.time_limit_minutes > 0 && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400">
-                                  <Clock className="w-3 h-3" />
-                                  {form.time_limit_minutes}p
-                                </span>
-                              )}
-
-                              <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
-                                {form.access_code}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center gap-2.5 text-xs text-zinc-500 font-medium">
-                              {(form.student_roster?.length || 0) > 0 && (
-                                <span className="inline-flex items-center gap-1 text-xs">
-                                  <Users className="w-3.5 h-3.5" />
-                                  {form.student_roster.length} HS
-                                </span>
-                              )}
-                              <span className="inline-flex items-center gap-1">
-                                <Eye className="w-3.5 h-3.5" /> {form.views_count}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Title */}
-                          <h3
-                            onClick={() => {
-                              setBuilderTab('questions');
-                              setEditingForm(form);
-                            }}
-                            className="font-display font-bold text-base sm:text-lg leading-snug cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
-                          >
-                            {form.title}
-                          </h3>
-                          {form.description && (
-                            <p className="text-xs text-zinc-500 mt-1 line-clamp-2">
-                              {form.description}
-                            </p>
-                          )}
-
-                          {/* Shareable Link Box */}
-                          <div
-                            className={`mt-4 p-2.5 rounded-2xl border flex items-center justify-between gap-2 ${
-                              darkMode
-                                ? 'bg-zinc-950 border-zinc-800'
-                                : 'bg-emerald-50/60 border-emerald-200/80'
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => openPublicSurvey(form.slug)}
-                              className="text-left font-mono text-[11px] sm:text-xs text-emerald-600 dark:text-emerald-400 underline truncate cursor-pointer flex-1"
-                            >
-                              {fullPublicUrl}
-                            </button>
-
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => copyPublicLink(form.slug)}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold cursor-pointer ${
-                                  darkMode
-                                    ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-100'
-                                    : 'bg-white border border-emerald-200 hover:bg-emerald-100 text-emerald-900'
-                                }`}
-                              >
-                                {copiedSlug === form.slug ? (
-                                  <>
-                                    <Check className="w-3 h-3 text-emerald-500" /> Đã chép
-                                  </>
-                                ) : (
-                                  <>
-                                    <Copy className="w-3 h-3" /> Chép
-                                  </>
-                                )}
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => openPublicSurvey(form.slug)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                              >
-                                {form.is_quiz ? 'Thi thử' : 'Điền thử'}{' '}
-                                <ExternalLink className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Card Footer */}
-                      <div
-                        className={`px-5 sm:px-6 py-3.5 border-t flex flex-wrap items-center justify-between gap-2 ${
+                    {/* Filter by Classroom */}
+                    {classrooms.length > 0 && (
+                      <select
+                        value={classroomFilter}
+                        onChange={(e) => setClassroomFilter(e.target.value)}
+                        className={`px-3 py-2 rounded-2xl text-xs font-bold border outline-none ${
                           darkMode
-                            ? 'bg-zinc-950/40 border-zinc-800'
-                            : 'bg-zinc-50/70 border-zinc-100'
+                            ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
+                            : 'bg-white border-zinc-200 text-zinc-800'
                         }`}
                       >
-                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                          <button
-                            onClick={() => {
-                              setBuilderTab('questions');
-                              setEditingForm(form);
-                            }}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                              darkMode
-                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-200'
-                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-800'
-                            }`}
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                            Soạn ({form.questions.length})
-                          </button>
+                        <option value="all">🏫 Tất cả các lớp</option>
+                        {classrooms.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            🏫 {c.name} ({c.student_count} HS)
+                          </option>
+                        ))}
+                      </select>
+                    )}
 
-                          <button
-                            onClick={() => {
-                              setBuilderTab('responses');
-                              setEditingForm(form);
-                            }}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                              darkMode
-                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-indigo-400'
-                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-indigo-700'
-                            }`}
-                          >
-                            <BarChart3 className="w-3.5 h-3.5" />
-                            {form.is_quiz
-                              ? `Bảng điểm (${form.response_count})`
-                              : `Kết quả (${form.response_count})`}
-                          </button>
-
-                          <button
-                            onClick={() => setShareModalForm(form)}
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
-                              darkMode
-                                ? 'border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-emerald-400'
-                                : 'border-zinc-200 bg-white hover:bg-zinc-100 text-emerald-700'
-                            }`}
-                          >
-                            <QrCode className="w-3.5 h-3.5" />
-                            QR
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => handleDuplicateForm(form.id)}
-                            title="Nhân bản"
-                            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white cursor-pointer"
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteForm(form)}
-                            title="Xóa"
-                            className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
+                    {/* Search Input */}
+                    <div
+                      className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs sm:w-56 ${
+                        darkMode
+                          ? 'bg-zinc-900 border-zinc-800 text-zinc-200'
+                          : 'bg-white border-zinc-200 text-zinc-800'
+                      }`}
+                    >
+                      <Search className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Tìm tên đề, lớp, KF-..."
+                        className="bg-transparent outline-none w-full"
+                      />
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                </div>
+
+                {loadingInitial ? (
+                  <div className="py-16 flex flex-col items-center justify-center gap-2">
+                    <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+                    <span className="text-xs text-zinc-500">Đang tải dữ liệu...</span>
+                  </div>
+                ) : filteredForms.length === 0 ? (
+                  <div
+                    className={`p-10 rounded-3xl border text-center ${
+                      darkMode ? 'bg-zinc-900/60 border-zinc-800' : 'bg-white border-zinc-200'
+                    }`}
+                  >
+                    <p className="text-sm font-semibold">
+                      Chưa có bài tập / biểu mẫu nào khớp bộ lọc
+                    </p>
+                    <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                      <button
+                        onClick={() => handleCreateHomeworkQuiz()}
+                        className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-xs font-bold bg-indigo-600 text-white cursor-pointer"
+                      >
+                        <GraduationCap className="w-4 h-4" />+ Soạn Bài Tập Mới
+                      </button>
+                      <button
+                        onClick={() => setWorkspaceTab('classrooms')}
+                        className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-xs font-bold bg-emerald-600 text-white cursor-pointer"
+                      >
+                        <Users className="w-4 h-4" />
+                        Quản lý Lớp &amp; DS Tên
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {filteredForms.map((form) => {
+                      const banner =
+                        CARD_BANNERS[form.theme_color] || CARD_BANNERS.indigo;
+                      const fullPublicUrl = getPublicUrlForSlug(form.slug);
+
+                      return (
+                        <div
+                          key={form.id}
+                          className={`rounded-3xl border overflow-hidden flex flex-col justify-between transition-all ${
+                            darkMode
+                              ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700'
+                              : 'bg-white border-zinc-200 hover:border-zinc-300 shadow-xs'
+                          }`}
+                        >
+                          <div>
+                            <div className={`h-2.5 bg-gradient-to-r ${banner}`} />
+                            <div className="p-4 sm:p-5 space-y-3">
+                              {/* Badges */}
+                              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {form.is_quiz ? (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/15 text-indigo-600 dark:text-indigo-400">
+                                      <GraduationCap className="w-3.5 h-3.5" />
+                                      Bài tập
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-500">
+                                      <Globe className="w-3 h-3" />
+                                      Khảo sát
+                                    </span>
+                                  )}
+
+                                  {form.classroom_name && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                      🏫 {form.classroom_name}
+                                    </span>
+                                  )}
+
+                                  {form.anti_cheat_enabled && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-500">
+                                      <ShieldAlert className="w-3 h-3" />
+                                      Chống thoát
+                                    </span>
+                                  )}
+
+                                  {form.time_limit_minutes > 0 && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-500">
+                                      <Clock className="w-3 h-3" />
+                                      {form.time_limit_minutes}p
+                                    </span>
+                                  )}
+
+                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                                    {form.access_code}
+                                  </span>
+                                </div>
+
+                                <span className="inline-flex items-center gap-1 text-xs text-zinc-400">
+                                  <Eye className="w-3.5 h-3.5" /> {form.views_count}
+                                </span>
+                              </div>
+
+                              {/* Title */}
+                              <div>
+                                <h3
+                                  onClick={() => {
+                                    setBuilderTab('questions');
+                                    setEditingForm(form);
+                                  }}
+                                  className="font-display font-bold text-base sm:text-lg leading-snug cursor-pointer hover:text-indigo-500"
+                                >
+                                  {form.title}
+                                </h3>
+                                {form.description && (
+                                  <p className="text-xs text-zinc-500 mt-1 line-clamp-2">
+                                    {form.description}
+                                  </p>
+                                )}
+                              </div>
+
+                              {/* Quick Assign Class Dropdown right on Card */}
+                              {classrooms.length > 0 && (
+                                <div className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="text-[11px] text-zinc-500 font-semibold shrink-0">
+                                    Giao cho lớp:
+                                  </span>
+                                  <select
+                                    value={form.classroom_id || ''}
+                                    onChange={(e) =>
+                                      handleQuickAssignCardClassroom(
+                                        form.id,
+                                        e.target.value
+                                      )
+                                    }
+                                    className={`flex-1 px-2.5 py-1.5 rounded-xl text-xs font-bold border outline-none cursor-pointer ${
+                                      form.classroom_id
+                                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                                        : darkMode
+                                          ? 'bg-zinc-950 border-zinc-800 text-zinc-400'
+                                          : 'bg-zinc-50 border-zinc-200 text-zinc-600'
+                                    }`}
+                                  >
+                                    <option value="">-- Chưa gắn lớp cố định --</option>
+                                    {classrooms.map((c) => (
+                                      <option key={c.id} value={c.id}>
+                                        🏫 {c.name} ({c.student_count} HS)
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {/* Public Link Strip */}
+                              <div
+                                className={`p-2.5 rounded-2xl border flex items-center justify-between gap-2 ${
+                                  darkMode
+                                    ? 'bg-zinc-950 border-zinc-800'
+                                    : 'bg-emerald-50/60 border-emerald-200/80'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => openPublicSurvey(form.slug)}
+                                  className="text-left font-mono text-[11px] text-emerald-600 dark:text-emerald-400 underline truncate cursor-pointer flex-1"
+                                >
+                                  {fullPublicUrl}
+                                </button>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => copyPublicLink(form.slug)}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold cursor-pointer ${
+                                      darkMode
+                                        ? 'bg-zinc-800 text-zinc-100'
+                                        : 'bg-white border border-emerald-200 text-emerald-900'
+                                    }`}
+                                  >
+                                    {copiedSlug === form.slug ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-500" /> Đã chép
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3" /> Copy
+                                      </>
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => openPublicSurvey(form.slug)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-emerald-600 text-white cursor-pointer"
+                                  >
+                                    {form.is_quiz ? 'Thi thử' : 'Mở'}{' '}
+                                    <ExternalLink className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Card Action Footer */}
+                          <div
+                            className={`px-4 sm:px-5 py-3 border-t flex items-center justify-between gap-2 ${
+                              darkMode
+                                ? 'bg-zinc-950/40 border-zinc-800'
+                                : 'bg-zinc-50/70 border-zinc-100'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <button
+                                onClick={() => {
+                                  setBuilderTab('questions');
+                                  setEditingForm(form);
+                                }}
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+                                  darkMode
+                                    ? 'border-zinc-800 bg-zinc-900 text-zinc-200'
+                                    : 'border-zinc-200 bg-white text-zinc-800'
+                                }`}
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                Soạn ({form.questions.length})
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setBuilderTab('responses');
+                                  setEditingForm(form);
+                                }}
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer ${
+                                  darkMode
+                                    ? 'border-zinc-800 bg-zinc-900 text-indigo-400'
+                                    : 'border-zinc-200 bg-white text-indigo-700'
+                                }`}
+                              >
+                                <BarChart3 className="w-3.5 h-3.5" />
+                                {form.is_quiz
+                                  ? `Điểm (${form.response_count}${
+                                      form.student_roster?.length
+                                        ? `/${form.student_roster.length}`
+                                        : ''
+                                    })`
+                                  : `KQ (${form.response_count})`}
+                              </button>
+
+                              <button
+                                onClick={() => setShareModalForm(form)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+                                  darkMode
+                                    ? 'border-zinc-800 bg-zinc-900 text-emerald-400'
+                                    : 'border-zinc-200 bg-white text-emerald-700'
+                                }`}
+                              >
+                                <QrCode className="w-3.5 h-3.5" />
+                                QR
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => handleDuplicateForm(form.id)}
+                                title="Nhân bản"
+                                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 dark:hover:text-white cursor-pointer"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteForm(form)}
+                                title="Xóa"
+                                className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
-          </>
-        )}
-      </section>
+          </section>
+        </>
+      )}
+
+      {/* ==================== NATIVE-STYLE MOBILE BOTTOM NAVIGATION BAR ==================== */}
+      <nav
+        className={`md:hidden fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl px-2 py-1.5 grid grid-cols-4 gap-1 ${
+          darkMode
+            ? 'bg-zinc-950/95 border-zinc-800 text-zinc-400'
+            : 'bg-white/95 border-zinc-200 text-zinc-600 shadow-lg'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => setWorkspaceTab('forms')}
+          className={`py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold cursor-pointer ${
+            workspaceTab === 'forms' ? 'text-indigo-500 bg-indigo-500/10' : ''
+          }`}
+        >
+          <LayoutGrid className="w-4 h-4" />
+          <span>Kho Đề ({forms.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => requireAuthThen(() => setWorkspaceTab('classrooms'))}
+          className={`py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold cursor-pointer ${
+            workspaceTab === 'classrooms' ? 'text-emerald-500 bg-emerald-500/10' : ''
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Lớp Học ({classrooms.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => handleCreateHomeworkQuiz()}
+          className="py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold text-white bg-indigo-600 shadow-xs cursor-pointer active:scale-95"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Giao Bài</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => openAgentModal('ai_prompt', true)}
+          className="py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 text-[10px] font-bold text-violet-500 cursor-pointer"
+        >
+          <Bot className="w-4 h-4" />
+          <span>AI Ra Đề</span>
+        </button>
+      </nav>
 
       {/* Modals */}
       <AuthModal
@@ -1201,6 +1432,8 @@ export function App() {
         open={agentModalOpen}
         initialTab={agentInitialTab}
         defaultQuizMode={agentQuizDefault}
+        defaultClassroomId={agentDefaultClassroomId}
+        classrooms={classrooms}
         user={user}
         serverInfo={serverInfo}
         darkMode={darkMode}

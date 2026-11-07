@@ -1,7 +1,11 @@
 import type {
   AuthUser,
+  Classroom,
+  ClassroomMasterGradebook,
+  ClassroomStudent,
   FormAnalytics,
   FormResponseItem,
+  PublicClassroomPortal,
   QuizSubmissionResult,
   ServerInfo,
   SurveyForm,
@@ -141,6 +145,108 @@ export async function regenerateAgentKey(): Promise<string> {
   return data.agent_api_key;
 }
 
+// ==================== CLASSROOMS & STUDENT ROSTERS ====================
+
+export async function fetchMyClassrooms(): Promise<Classroom[]> {
+  if (!getStoredToken()) return [];
+  const res = await apiFetch('/api/classrooms', { headers: authHeaders() });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.classrooms || [];
+}
+
+export async function createClassroom(payload: {
+  name: string;
+  subject?: string;
+  school_year?: string;
+  description?: string;
+  theme_color?: string;
+  students: (string | Partial<ClassroomStudent>)[];
+}): Promise<Classroom> {
+  const res = await apiFetch('/api/classrooms', {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tạo lớp học' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tạo lớp học mới');
+  return data;
+}
+
+export async function updateClassroom(
+  classroomId: string,
+  payload: {
+    name: string;
+    subject?: string;
+    school_year?: string;
+    description?: string;
+    theme_color?: string;
+    students: (string | Partial<ClassroomStudent>)[];
+  }
+): Promise<Classroom> {
+  const res = await apiFetch(`/api/classrooms/${classroomId}`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi lưu lớp học' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể cập nhật lớp học');
+  return data;
+}
+
+export async function deleteClassroom(classroomId: string): Promise<void> {
+  const res = await apiFetch(`/api/classrooms/${classroomId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Không thể xóa lớp học');
+}
+
+export async function fetchClassroomGradebook(
+  classroomId: string
+): Promise<ClassroomMasterGradebook> {
+  const res = await apiFetch(`/api/classrooms/${classroomId}/gradebook`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi tải sổ điểm lớp' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể tải sổ điểm tổng hợp lớp');
+  return data;
+}
+
+export function getClassroomCsvExportUrl(classroomId: string): string {
+  const token = getStoredToken();
+  const q = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${resolvedBaseUrl}/api/classrooms/${classroomId}/export-gradebook.csv${q}`;
+}
+
+export async function fetchPublicClassroomPortal(
+  roomCode: string
+): Promise<PublicClassroomPortal> {
+  const res = await apiFetch(`/api/public/classrooms/${encodeURIComponent(roomCode)}`);
+  const data = await res.json().catch(() => ({ detail: 'Không tìm thấy phòng lớp học' }));
+  if (!res.ok) throw new Error(data.detail || 'Mã lớp học không tồn tại');
+  return data;
+}
+
+export async function assignFormToClassroom(
+  formId: string,
+  payload: {
+    classroom_id: string | null;
+    strict_roster?: boolean;
+    max_attempts?: number;
+    due_at?: string | null;
+  }
+): Promise<SurveyForm> {
+  const res = await apiFetch(`/api/forms/${formId}/assign-classroom`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ detail: 'Lỗi giao bài cho lớp' }));
+  if (!res.ok) throw new Error(data.detail || 'Không thể giao bài cho lớp');
+  return data;
+}
+
 // ==================== TEMPLATES & PRIVATE ACCOUNT FORMS ====================
 
 export async function fetchSurveyTemplates(): Promise<SurveyTemplate[]> {
@@ -177,6 +283,7 @@ export async function agentGenerateForm(payload: {
   theme_color: string;
   is_quiz?: boolean;
   is_published?: boolean;
+  classroom_id?: string | null;
 }): Promise<{ form: SurveyForm; public_url: string; generator_engine: string }> {
   const res = await apiFetch('/api/forms/agent-generate', {
     method: 'POST',
@@ -194,6 +301,7 @@ export async function importFormFromCode(payload: {
   is_quiz?: boolean;
   is_published?: boolean;
   parse_only?: boolean;
+  classroom_id?: string | null;
 }): Promise<{ form?: SurveyForm; parsed?: Partial<SurveyForm>; public_url?: string }> {
   const res = await apiFetch('/api/forms/import-code', {
     method: 'POST',
@@ -264,6 +372,7 @@ export async function submitPublicSurvey(
   allow_public_summary: boolean;
   is_quiz?: boolean;
   show_score_immediately?: boolean;
+  pass_score?: number;
   quiz_result?: QuizSubmissionResult | null;
 }> {
   const res = await apiFetch(

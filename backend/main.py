@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -14,22 +15,31 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from database import (
+    assign_form_to_classroom,
     authenticate_user,
+    count_student_attempts,
+    create_classroom,
     create_form,
     create_session,
     create_user,
+    delete_classroom,
     delete_form,
     delete_response,
     delete_session,
+    get_classroom_by_code_or_id,
+    get_classroom_by_id,
     get_form_by_id,
     get_form_by_slug_or_code,
     get_user_by_agent_key,
     get_user_by_token,
     init_db,
+    list_classrooms_for_owner,
+    list_forms_by_classroom,
     list_forms_for_owner,
     list_responses,
     regenerate_user_agent_key,
     submit_response,
+    update_classroom,
     update_form,
     update_response_grade,
 )
@@ -44,9 +54,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="KromaForms Studio & Classroom Quiz API",
-    description="Private Multi-Tenant Survey, Auto-Graded Homework Quiz & Anti-Cheat Exam Platform",
-    version="3.2.0",
+    title="KromaForms Studio & Classroom LMS API",
+    description="Private Multi-Tenant Classrooms, Auto-Graded Homework Quizzes, Anti-Cheat Proctoring & Surveys",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -76,7 +86,7 @@ def get_public_tunnel_url() -> str | None:
     if env_url:
         return env_url.rstrip("/")
     if PUBLIC_TUNNEL_URL_FILE.exists():
-        content = PUBLIC_TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
+        content = PUBLIC_TUNNEL_URL_FILE.read_text(encoding="utf-8-sig").strip()
         if content.startswith("http"):
             return content.rstrip("/")
     return None
@@ -95,6 +105,22 @@ def build_public_survey_urls(slug: str) -> dict[str, str]:
     }
 
 
+def _is_past_due(due_at_str: str | None) -> bool:
+    if not due_at_str or not str(due_at_str).strip():
+        return False
+    try:
+        raw = str(due_at_str).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            now_local = datetime.now()
+            return now_local > dt
+        return datetime.now(timezone.utc) > dt.astimezone(timezone.utc)
+    except Exception:
+        return False
+
+
 # ==================== SCHEMAS ====================
 
 class RegisterRequest(BaseModel):
@@ -106,6 +132,22 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(..., min_length=5, max_length=120)
     password: str = Field(..., min_length=1, max_length=128)
+
+
+class ClassroomPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    subject: str = Field(default="", max_length=120)
+    school_year: str = Field(default="2026 - 2027", max_length=40)
+    description: str = Field(default="", max_length=1000)
+    theme_color: str = Field(default="indigo")
+    students: list[Any] = Field(default_factory=list)
+
+
+class AssignClassroomRequest(BaseModel):
+    classroom_id: str | None = Field(default=None)
+    strict_roster: bool | None = Field(default=None)
+    max_attempts: int | None = Field(default=None, ge=0, le=20)
+    due_at: str | None = Field(default=None)
 
 
 class QuestionItem(BaseModel):
@@ -122,6 +164,7 @@ class QuestionItem(BaseModel):
 
 
 class FormPayload(BaseModel):
+    classroom_id: str | None = Field(default=None)
     title: str = Field(default="Biểu mẫu chưa có tiêu đề", max_length=200)
     description: str = Field(default="", max_length=2000)
     theme_color: str = Field(default="indigo")
@@ -140,6 +183,9 @@ class FormPayload(BaseModel):
     shuffle_questions: bool = Field(default=False)
     strict_roster: bool = Field(default=False)
     student_roster: list[str] = Field(default_factory=list)
+    max_attempts: int = Field(default=0, ge=0, le=20)
+    due_at: str | None = Field(default=None)
+    pass_score: float = Field(default=5.0, ge=0, le=10)
     questions: list[QuestionItem] = Field(default_factory=list)
 
 
@@ -149,6 +195,7 @@ class AgentGenerateRequest(BaseModel):
     theme_color: str = Field(default="indigo")
     is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
+    classroom_id: str | None = Field(default=None)
 
 
 class ImportCodeRequest(BaseModel):
@@ -157,6 +204,7 @@ class ImportCodeRequest(BaseModel):
     is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
     parse_only: bool = Field(default=False)
+    classroom_id: str | None = Field(default=None)
 
 
 class ExternalAgentQuickCreateRequest(BaseModel):
@@ -168,6 +216,7 @@ class ExternalAgentQuickCreateRequest(BaseModel):
     theme_color: str = Field(default="indigo")
     is_quiz: bool = Field(default=False)
     is_published: bool = Field(default=True)
+    classroom_id: str | None = Field(default=None)
     questions: list[dict[str, Any]] | None = Field(default=None)
 
 
@@ -244,6 +293,31 @@ def _assert_form_owner(form: dict[str, Any] | None, user: dict[str, Any]) -> dic
             detail="Biểu mẫu này thuộc tài khoản khác. Bạn không có quyền truy cập quản trị.",
         )
     return form
+
+
+def _assert_classroom_owner(cls: dict[str, Any] | None, user: dict[str, Any]) -> dict[str, Any]:
+    if not cls:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học.")
+    if cls.get("user_id") != user["id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Lớp học này thuộc tài khoản giáo viên khác.",
+        )
+    return cls
+
+
+def _classify_academic_rank(avg10: float | None) -> str:
+    if avg10 is None:
+        return "Chưa có điểm"
+    if avg10 >= 9.0:
+        return "Xuất sắc"
+    if avg10 >= 8.0:
+        return "Giỏi"
+    if avg10 >= 6.5:
+        return "Khá"
+    if avg10 >= 5.0:
+        return "Đạt"
+    return "Cần cố gắng"
 
 
 # ==================== QUIZ AUTO-GRADING ENGINE ====================
@@ -329,8 +403,8 @@ def _grade_quiz_submission(
 async def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
-        "app": "KromaForms Studio & Classroom",
-        "version": "3.2.0",
+        "app": "KromaForms Studio & Classroom LMS",
+        "version": "4.0.0",
         "lan_ip": get_lan_ip(),
         "public_tunnel_url": get_public_tunnel_url(),
     }
@@ -391,6 +465,265 @@ async def rotate_agent_api_key(
     return {"agent_api_key": new_key}
 
 
+# ==================== CLASSROOM & MASTER GRADEBOOK ENDPOINTS ====================
+
+@app.get("/api/classrooms")
+async def get_my_classrooms(
+    user: dict[str, Any] | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    if not user:
+        return {"classrooms": []}
+    return {"classrooms": list_classrooms_for_owner(user["id"])}
+
+
+@app.post("/api/classrooms")
+async def create_new_classroom(
+    payload: ClassroomPayload,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    return create_classroom(payload.model_dump(), user_id=user["id"])
+
+
+def _compute_classroom_master_gradebook(cls: dict[str, Any]) -> dict[str, Any]:
+    forms = list_forms_by_classroom(cls["id"], published_only=False)
+    responses_by_form: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for f in forms:
+        f_resps = list_responses(f["id"])
+        by_name: dict[str, dict[str, Any]] = {}
+        for r in f_resps:
+            nm = (r.get("respondent_name") or "").strip().lower()
+            if nm and nm not in by_name:
+                by_name[nm] = r
+        responses_by_form[f["id"]] = by_name
+
+    student_rows: list[dict[str, Any]] = []
+    class_avg_list: list[float] = []
+
+    for st in cls["students"]:
+        st_name = st["name"]
+        key = st_name.strip().lower()
+        scores_by_form: dict[str, float | None] = {}
+        earned_scores_10: list[float] = []
+        total_cheats = 0
+        submitted_cnt = 0
+
+        for f in forms:
+            matched = responses_by_form[f["id"]].get(key)
+            if matched:
+                submitted_cnt += 1
+                total_cheats += int(matched.get("cheat_count") or 0)
+                if matched.get("final_score") is not None:
+                    ms = float(matched.get("max_score") or 10.0)
+                    fs = float(matched["final_score"])
+                    s10 = round((fs / ms) * 10.0, 2) if ms > 0 else fs
+                    scores_by_form[f["id"]] = s10
+                    earned_scores_10.append(s10)
+                else:
+                    scores_by_form[f["id"]] = 10.0
+            else:
+                scores_by_form[f["id"]] = None
+
+        bonus = float(st.get("bonus_points") or 0.0)
+        raw_avg = (
+            round(sum(earned_scores_10) / len(earned_scores_10), 2)
+            if earned_scores_10
+            else None
+        )
+        final_avg = (
+            round(min(10.0, max(0.0, raw_avg + bonus)), 2)
+            if raw_avg is not None
+            else (round(bonus, 2) if bonus > 0 else None)
+        )
+        if final_avg is not None:
+            class_avg_list.append(final_avg)
+
+        student_rows.append(
+            {
+                "id": st["id"],
+                "student_code": st.get("student_code", ""),
+                "name": st_name,
+                "bonus_points": bonus,
+                "note": st.get("note", ""),
+                "submitted_count": submitted_cnt,
+                "total_forms": len(forms),
+                "total_cheats": total_cheats,
+                "scores_by_form": scores_by_form,
+                "average_score_10": final_avg,
+                "academic_rank": _classify_academic_rank(final_avg),
+            }
+        )
+
+    return {
+        "classroom": cls,
+        "assigned_forms": [
+            {
+                "id": f["id"],
+                "title": f["title"],
+                "slug": f["slug"],
+                "access_code": f["access_code"],
+                "is_quiz": f["is_quiz"],
+                "is_published": f["is_published"],
+                "accepting_responses": f["accepting_responses"],
+                "time_limit_minutes": f["time_limit_minutes"],
+                "anti_cheat_enabled": f["anti_cheat_enabled"],
+                "due_at": f.get("due_at"),
+                "response_count": f["response_count"],
+                "question_count": len(f["questions"]),
+            }
+            for f in forms
+        ],
+        "student_rows": student_rows,
+        "class_average_10": round(sum(class_avg_list) / len(class_avg_list), 2)
+        if class_avg_list
+        else None,
+    }
+
+
+@app.get("/api/classrooms/{classroom_id}/gradebook")
+async def get_classroom_gradebook(
+    classroom_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    cls = _assert_classroom_owner(get_classroom_by_id(classroom_id), user)
+    return _compute_classroom_master_gradebook(cls)
+
+
+@app.get("/api/classrooms/{classroom_id}/export-gradebook.csv")
+async def export_classroom_master_csv(
+    classroom_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+):
+    cls = _assert_classroom_owner(get_classroom_by_id(classroom_id), user)
+    gb = _compute_classroom_master_gradebook(cls)
+    forms = gb["assigned_forms"]
+
+    buf = StringIO()
+    buf.write("\ufeff")
+    writer = csv.writer(buf)
+
+    headers = (
+        ["STT", "Mã HS", "Họ và tên Học sinh", "Lớp"]
+        + [f["title"] for f in forms]
+        + [
+            "Số bài đã nộp",
+            "Điểm cộng chuyên cần",
+            "Điểm TB Chung (Hệ 10)",
+            "Xếp loại",
+            "Cảnh báo Thoát App",
+            "Ghi chú GV",
+        ]
+    )
+    writer.writerow(headers)
+
+    for idx, row in enumerate(gb["student_rows"], start=1):
+        csv_row: list[Any] = [
+            idx,
+            row["student_code"],
+            row["name"],
+            cls["name"],
+        ]
+        for f in forms:
+            sc = row["scores_by_form"].get(f["id"])
+            csv_row.append(sc if sc is not None else "Chưa nộp")
+        csv_row.extend(
+            [
+                f"{row['submitted_count']}/{row['total_forms']}",
+                row["bonus_points"],
+                row["average_score_10"] if row["average_score_10"] is not None else "",
+                row["academic_rank"],
+                row["total_cheats"],
+                row["note"],
+            ]
+        )
+        writer.writerow(csv_row)
+
+    buf.seek(0)
+    filename = f"so_diem_lop_{cls['room_code']}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.put("/api/classrooms/{classroom_id}")
+async def save_classroom_changes(
+    classroom_id: str,
+    payload: ClassroomPayload,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    try:
+        updated = update_classroom(classroom_id, payload.model_dump(), user_id=user["id"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học.")
+    return updated
+
+
+@app.delete("/api/classrooms/{classroom_id}")
+async def remove_classroom(
+    classroom_id: str,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    try:
+        ok = delete_classroom(classroom_id, user_id=user["id"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lớp học.")
+    return {"deleted": True, "id": classroom_id}
+
+
+# ==================== PUBLIC CLASSROOM PORTAL (FOR STUDENTS ON MOBILE) ====================
+
+@app.get("/api/public/classrooms/{identifier}")
+async def fetch_public_classroom_portal(identifier: str) -> dict[str, Any]:
+    cls = get_classroom_by_code_or_id(identifier)
+    if not cls:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy Phòng Lớp Học với mã này. Vui lòng kiểm tra lại Mã Lớp (KL-...).",
+        )
+
+    forms = list_forms_by_classroom(cls["id"], published_only=True)
+    assignments = []
+    for f in forms:
+        assignments.append(
+            {
+                "id": f["id"],
+                "slug": f["slug"],
+                "access_code": f["access_code"],
+                "title": f["title"],
+                "description": f["description"],
+                "theme_color": f["theme_color"],
+                "is_quiz": f["is_quiz"],
+                "accepting_responses": f["accepting_responses"] and not _is_past_due(f.get("due_at")),
+                "time_limit_minutes": f["time_limit_minutes"],
+                "anti_cheat_enabled": f["anti_cheat_enabled"],
+                "due_at": f.get("due_at"),
+                "is_past_due": _is_past_due(f.get("due_at")),
+                "question_count": len(f["questions"]),
+                "response_count": f["response_count"],
+                "created_at": f["created_at"],
+            }
+        )
+
+    return {
+        "id": cls["id"],
+        "room_code": cls["room_code"],
+        "name": cls["name"],
+        "subject": cls["subject"],
+        "school_year": cls["school_year"],
+        "description": cls["description"],
+        "theme_color": cls["theme_color"],
+        "student_names": cls["student_names"],
+        "student_count": cls["student_count"],
+        "assignments": assignments,
+    }
+
+
 # ==================== TEMPLATES & PRIVATE ACCOUNT FORMS ====================
 
 @app.get("/api/templates")
@@ -448,6 +781,8 @@ async def agent_generate_survey(
     generated["is_published"] = req.is_published
     generated["accepting_responses"] = True
     generated["allow_public_summary"] = not generated.get("is_quiz", False)
+    if req.classroom_id:
+        generated["classroom_id"] = req.classroom_id
     saved_form = create_form(generated, user_id=user["id"])
     urls = build_public_survey_urls(saved_form["slug"])
     return {
@@ -475,6 +810,8 @@ async def import_survey_from_quick_code(
     parsed["is_published"] = req.is_published
     parsed["accepting_responses"] = True
     parsed["allow_public_summary"] = not parsed.get("is_quiz", False)
+    if req.classroom_id:
+        parsed["classroom_id"] = req.classroom_id
     saved_form = create_form(parsed, user_id=user["id"])
     urls = build_public_survey_urls(saved_form["slug"])
     return {
@@ -520,6 +857,8 @@ async def external_agent_quick_create(
 
     if req.title:
         form_data["title"] = req.title
+    if req.classroom_id:
+        form_data["classroom_id"] = req.classroom_id
     form_data["is_published"] = req.is_published
     form_data["accepting_responses"] = True
     form_data["allow_public_summary"] = not form_data.get("is_quiz", False)
@@ -561,6 +900,28 @@ async def save_form_changes(
     return updated
 
 
+@app.post("/api/forms/{form_id}/assign-classroom")
+async def assign_form_classroom_endpoint(
+    form_id: str,
+    req: AssignClassroomRequest,
+    user: dict[str, Any] = Depends(get_required_user),
+) -> dict[str, Any]:
+    try:
+        updated = assign_form_to_classroom(
+            form_id=form_id,
+            classroom_id=req.classroom_id,
+            user_id=user["id"],
+            strict_roster=req.strict_roster,
+            max_attempts=req.max_attempts,
+            due_at=req.due_at,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài tập / biểu mẫu.")
+    return updated
+
+
 @app.post("/api/forms/{form_id}/duplicate")
 async def duplicate_existing_form(
     form_id: str,
@@ -568,6 +929,7 @@ async def duplicate_existing_form(
 ) -> dict[str, Any]:
     original = _assert_form_owner(get_form_by_id(form_id), user)
     copy_data = {
+        "classroom_id": original.get("classroom_id"),
         "title": f"{original['title']} (Bản sao)",
         "description": original["description"],
         "theme_color": original["theme_color"],
@@ -584,6 +946,9 @@ async def duplicate_existing_form(
         "shuffle_questions": original["shuffle_questions"],
         "strict_roster": original["strict_roster"],
         "student_roster": original["student_roster"],
+        "max_attempts": original.get("max_attempts", 0),
+        "due_at": original.get("due_at"),
+        "pass_score": original.get("pass_score", 5.0),
         "questions": original["questions"],
     }
     return create_form(copy_data, user_id=user["id"])
@@ -629,13 +994,12 @@ async def add_manual_student_grade(
     req: ManualStudentGradeRequest,
     user: dict[str, Any] = Depends(get_required_user),
 ) -> dict[str, Any]:
-    """Allow teacher to assign a custom score directly to any student name in the Gradebook."""
-    _assert_form_owner(get_form_by_id(form_id), user)
+    form = _assert_form_owner(get_form_by_id(form_id), user)
     saved = submit_response(
         form_id=form_id,
         answers={},
         respondent_name=req.respondent_name,
-        student_class=req.student_class,
+        student_class=req.student_class or form.get("classroom_name"),
         auto_score=0.0,
         max_score=req.max_score,
         bonus_score=req.final_score,
@@ -660,7 +1024,6 @@ async def fetch_public_form(identifier: str) -> dict[str, Any]:
             detail="Biểu mẫu / Bài tập này không tồn tại hoặc đã đóng công khai.",
         )
 
-    # Strip answer keys & explanations so students cannot inspect DevTools!
     safe_questions = []
     for q in form["questions"]:
         sq = dict(q)
@@ -673,6 +1036,12 @@ async def fetch_public_form(identifier: str) -> dict[str, Any]:
 
     public_copy = dict(form)
     public_copy.pop("user_id", None)
+    public_copy["is_past_due"] = _is_past_due(form.get("due_at"))
+    if form.get("classroom_id"):
+        cls = get_classroom_by_id(form["classroom_id"])
+        if cls:
+            public_copy["classroom_room_code"] = cls["room_code"]
+            public_copy["classroom_subject"] = cls["subject"]
     public_copy["questions"] = safe_questions
     return public_copy
 
@@ -686,25 +1055,39 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
         raise HTTPException(
             status_code=400, detail="Bài tập / Biểu mẫu này hiện đã khóa nhận bài mới."
         )
+    if _is_past_due(form.get("due_at")):
+        raise HTTPException(
+            status_code=400,
+            detail="Bài tập này đã quá hạn chót nộp bài theo quy định của Giáo viên!",
+        )
 
     clean_name = (req.respondent_name or "").strip()
     if form["is_quiz"] and not clean_name:
         raise HTTPException(
-            status_code=400, detail="Vui lòng nhập hoặc chọn Họ và tên Học sinh trước khi nộp bài!"
+            status_code=400, detail="Vui lòng chọn hoặc nhập Họ và tên Học sinh trước khi nộp bài!"
         )
 
     if form["strict_roster"] and form["student_roster"]:
         allowed_names = {n.strip().lower() for n in form["student_roster"]}
         if clean_name.lower() not in allowed_names:
+            cls_label = f" ({form['classroom_name']})" if form.get("classroom_name") else ""
             raise HTTPException(
                 status_code=400,
-                detail="Tên học sinh không nằm trong Danh sách lớp được giao bài. Vui lòng chọn đúng tên trong danh sách!",
+                detail=f"Tên học sinh không nằm trong Danh sách lớp được giao bài{cls_label}. Vui lòng chọn đúng tên trong danh sách!",
+            )
+
+    max_att = int(form.get("max_attempts") or 0)
+    if max_att > 0 and clean_name:
+        used_att = count_student_attempts(form["id"], clean_name)
+        if used_att >= max_att:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Học sinh '{clean_name}' đã nộp bài đủ số lần cho phép ({max_att} lần)!",
             )
 
     if form["collect_email"] and not (req.respondent_email or "").strip():
         raise HTTPException(status_code=400, detail="Vui lòng nhập địa chỉ Email của bạn.")
 
-    # Skip strict required-field rejection ONLY if auto-submitted due to anti-cheat / timeout
     if not req.auto_submitted_cheat:
         for q in form["questions"]:
             if q.get("required"):
@@ -731,12 +1114,14 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
         max_score = quiz_result["max_score"]
         final_score = auto_score
 
+    effective_class = (req.student_class or "").strip() or form.get("classroom_name") or None
+
     saved = submit_response(
         form_id=form["id"],
         answers=req.answers,
         respondent_name=clean_name or None,
         respondent_email=req.respondent_email,
-        student_class=req.student_class,
+        student_class=effective_class,
         auto_score=auto_score,
         max_score=max_score,
         bonus_score=0.0,
@@ -754,6 +1139,7 @@ async def submit_public_form(identifier: str, req: SubmitSurveyRequest) -> dict[
         "allow_public_summary": form["allow_public_summary"] and not form["is_quiz"],
         "is_quiz": form["is_quiz"],
         "show_score_immediately": form["show_score_immediately"],
+        "pass_score": form.get("pass_score", 5.0),
         "quiz_result": quiz_result if (form["is_quiz"] and form["show_score_immediately"]) else None,
     }
 
@@ -883,7 +1269,7 @@ def _build_roster_gradebook(
                     "student_name": st_name,
                     "submitted": True,
                     "response_id": matched["id"],
-                    "student_class": matched.get("student_class"),
+                    "student_class": matched.get("student_class") or form.get("classroom_name"),
                     "auto_score": matched.get("auto_score"),
                     "bonus_score": matched.get("bonus_score", 0.0),
                     "final_score": fin_s,
@@ -902,7 +1288,7 @@ def _build_roster_gradebook(
                     "student_name": st_name,
                     "submitted": False,
                     "response_id": None,
-                    "student_class": None,
+                    "student_class": form.get("classroom_name"),
                     "auto_score": None,
                     "bonus_score": 0.0,
                     "final_score": None,
@@ -952,15 +1338,60 @@ async def get_owner_form_analytics(
         else 100.0
     )
 
+    pass_threshold = float(form.get("pass_score") if form.get("pass_score") is not None else 5.0)
     scores_10: list[float] = []
+    passed_count = 0
     flagged_cheat_students = 0
+    buckets = {
+        "Giỏi (8.0 - 10đ)": 0,
+        "Khá (6.5 - 7.9đ)": 0,
+        "Đạt (5.0 - 6.4đ)": 0,
+        "Chưa đạt (< 5.0đ)": 0,
+    }
+    leaderboard_candidates: list[dict[str, Any]] = []
+
     for r in responses:
         if r.get("cheat_count", 0) > 0:
             flagged_cheat_students += 1
         if r.get("final_score") is not None:
             ms = float(r.get("max_score") or 10.0)
             fs = float(r["final_score"])
-            scores_10.append(round((fs / ms) * 10.0, 2) if ms > 0 else fs)
+            s10 = round((fs / ms) * 10.0, 2) if ms > 0 else fs
+            scores_10.append(s10)
+            if s10 >= pass_threshold:
+                passed_count += 1
+            if s10 >= 8.0:
+                buckets["Giỏi (8.0 - 10đ)"] += 1
+            elif s10 >= 6.5:
+                buckets["Khá (6.5 - 7.9đ)"] += 1
+            elif s10 >= 5.0:
+                buckets["Đạt (5.0 - 6.4đ)"] += 1
+            else:
+                buckets["Chưa đạt (< 5.0đ)"] += 1
+
+            leaderboard_candidates.append(
+                {
+                    "id": r["id"],
+                    "name": r.get("respondent_name") or "Học sinh",
+                    "student_class": r.get("student_class") or form.get("classroom_name") or "",
+                    "score_10": s10,
+                    "duration_seconds": int(r.get("duration_seconds") or 0),
+                    "cheat_count": int(r.get("cheat_count") or 0),
+                }
+            )
+
+    leaderboard_candidates.sort(
+        key=lambda x: (-x["score_10"], x["cheat_count"], x["duration_seconds"] or 999999)
+    )
+    total_scored = max(1, len(scores_10))
+    score_distribution = [
+        {
+            "label": k,
+            "count": v,
+            "percent": round((v / total_scored) * 100, 1) if scores_10 else 0.0,
+        }
+        for k, v in buckets.items()
+    ]
 
     return {
         "form": form,
@@ -969,6 +1400,9 @@ async def get_owner_form_analytics(
         "completion_rate": min(100.0, completion_rate),
         "average_score_10": round(sum(scores_10) / len(scores_10), 2) if scores_10 else None,
         "highest_score_10": max(scores_10) if scores_10 else None,
+        "pass_rate": round((passed_count / len(scores_10)) * 100, 1) if scores_10 else None,
+        "score_distribution": score_distribution,
+        "top_students": leaderboard_candidates[:5],
         "flagged_cheat_count": flagged_cheat_students,
         "roster_gradebook": roster_gradebook,
         "question_stats": question_stats,
@@ -1011,7 +1445,7 @@ async def export_responses_csv(
             row = [
                 idx,
                 r.get("respondent_name") or "Chưa ghi tên",
-                r.get("student_class") or "",
+                r.get("student_class") or form.get("classroom_name") or "",
                 r.get("auto_score") if r.get("auto_score") is not None else "",
                 r.get("bonus_score", 0),
                 fs,

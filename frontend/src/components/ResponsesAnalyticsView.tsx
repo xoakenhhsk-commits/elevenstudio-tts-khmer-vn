@@ -308,6 +308,105 @@ export function ResponsesAnalyticsView({
         </div>
       </div>
 
+      {/* SCORE DISTRIBUTION & TOP LEADERBOARD (QUIZ MODE) */}
+      {form.is_quiz &&
+        analytics.score_distribution &&
+        analytics.total_responses > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div
+              className={`p-4 sm:p-5 rounded-3xl border space-y-3 ${
+                darkMode
+                  ? 'bg-zinc-900/90 border-zinc-800'
+                  : 'bg-white border-zinc-200 shadow-2xs'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-display font-bold text-xs sm:text-sm flex items-center gap-1.5">
+                  <BarChart3 className="w-4 h-4 text-indigo-500" />
+                  Phổ Điểm Học Lực {form.classroom_name ? `(${form.classroom_name})` : ''}
+                </h3>
+                {analytics.pass_rate !== null && analytics.pass_rate !== undefined && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-500">
+                    Đạt chuẩn: {analytics.pass_rate}%
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2.5">
+                {analytics.score_distribution.map((b) => (
+                  <div key={b.label}>
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="font-medium">{b.label}</span>
+                      <span className="font-mono font-bold text-zinc-500">
+                        {b.count} HS ({b.percent}%)
+                      </span>
+                    </div>
+                    <div
+                      className={`h-2 rounded-full overflow-hidden ${
+                        darkMode ? 'bg-zinc-800' : 'bg-zinc-100'
+                      }`}
+                    >
+                      <div
+                        className="h-full rounded-full bg-indigo-500 transition-all"
+                        style={{ width: `${Math.max(b.percent, b.count > 0 ? 4 : 0)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div
+              className={`p-4 sm:p-5 rounded-3xl border space-y-3 ${
+                darkMode
+                  ? 'bg-zinc-900/90 border-zinc-800'
+                  : 'bg-white border-zinc-200 shadow-2xs'
+              }`}
+            >
+              <h3 className="font-display font-bold text-xs sm:text-sm flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-amber-500" />
+                Bảng Vinh Danh Top Điểm Cao Nhất
+              </h3>
+              <div className="space-y-2">
+                {(analytics.top_students || []).map((st, idx) => (
+                  <div
+                    key={st.id}
+                    className={`px-3.5 py-2 rounded-2xl border flex items-center justify-between gap-2 text-xs ${
+                      darkMode
+                        ? 'bg-zinc-950 border-zinc-800'
+                        : 'bg-zinc-50 border-zinc-200/70'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`w-6 h-6 rounded-full font-mono text-[11px] font-extrabold flex items-center justify-center shrink-0 ${
+                          idx === 0
+                            ? 'bg-amber-400 text-zinc-950'
+                            : idx === 1
+                              ? 'bg-zinc-300 text-zinc-900'
+                              : idx === 2
+                                ? 'bg-amber-700 text-white'
+                                : 'bg-zinc-800 text-zinc-300'
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <span className="font-bold truncate">{st.name}</span>
+                      {st.student_class && (
+                        <span className="text-[10px] text-indigo-500 font-semibold shrink-0">
+                          {st.student_class}
+                        </span>
+                      )}
+                    </div>
+                    <span className="font-mono font-extrabold text-emerald-500 shrink-0">
+                      {st.score_10}/10đ
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
       {/* Scrollable Sub-navigation + CSV Export */}
       <div
         className={`p-3 rounded-3xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${

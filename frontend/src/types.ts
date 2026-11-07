@@ -10,6 +10,98 @@ export type QuestionType =
 
 export type ThemeColor = 'indigo' | 'emerald' | 'violet' | 'rose' | 'amber' | 'zinc';
 
+export interface ClassroomStudent {
+  id: string;
+  name: string;
+  student_code: string;
+  bonus_points: number;
+  note: string;
+}
+
+export interface Classroom {
+  id: string;
+  user_id?: string;
+  room_code: string;
+  name: string;
+  subject: string;
+  school_year: string;
+  description: string;
+  theme_color: ThemeColor | string;
+  students: ClassroomStudent[];
+  student_names: string[];
+  student_count: number;
+  assigned_forms_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClassroomAssignedFormSummary {
+  id: string;
+  title: string;
+  slug: string;
+  access_code: string;
+  is_quiz: boolean;
+  is_published: boolean;
+  accepting_responses: boolean;
+  time_limit_minutes: number;
+  anti_cheat_enabled: boolean;
+  due_at?: string | null;
+  response_count: number;
+  question_count: number;
+}
+
+export interface ClassroomMasterStudentRow {
+  id: string;
+  student_code: string;
+  name: string;
+  bonus_points: number;
+  note: string;
+  submitted_count: number;
+  total_forms: number;
+  total_cheats: number;
+  scores_by_form: Record<string, number | null>;
+  average_score_10: number | null;
+  academic_rank: string;
+}
+
+export interface ClassroomMasterGradebook {
+  classroom: Classroom;
+  assigned_forms: ClassroomAssignedFormSummary[];
+  student_rows: ClassroomMasterStudentRow[];
+  class_average_10: number | null;
+}
+
+export interface PublicClassroomAssignment {
+  id: string;
+  slug: string;
+  access_code: string;
+  title: string;
+  description: string;
+  theme_color: string;
+  is_quiz: boolean;
+  accepting_responses: boolean;
+  time_limit_minutes: number;
+  anti_cheat_enabled: boolean;
+  due_at?: string | null;
+  is_past_due?: boolean;
+  question_count: number;
+  response_count: number;
+  created_at: string;
+}
+
+export interface PublicClassroomPortal {
+  id: string;
+  room_code: string;
+  name: string;
+  subject: string;
+  school_year: string;
+  description: string;
+  theme_color: string;
+  student_names: string[];
+  student_count: number;
+  assignments: PublicClassroomAssignment[];
+}
+
 export interface Question {
   id: string;
   type: QuestionType;
@@ -26,6 +118,10 @@ export interface Question {
 export interface SurveyForm {
   id: string;
   user_id?: string | null;
+  classroom_id?: string | null;
+  classroom_name?: string | null;
+  classroom_room_code?: string | null;
+  classroom_subject?: string | null;
   slug: string;
   access_code: string;
   title: string;
@@ -44,6 +140,10 @@ export interface SurveyForm {
   shuffle_questions: boolean;
   strict_roster: boolean;
   student_roster: string[];
+  max_attempts?: number;
+  due_at?: string | null;
+  is_past_due?: boolean;
+  pass_score?: number;
   questions: Question[];
   views_count: number;
   response_count: number;
@@ -132,6 +232,15 @@ export interface DistributionBar {
   percent: number;
 }
 
+export interface TopStudentItem {
+  id: string;
+  name: string;
+  student_class: string;
+  score_10: number;
+  duration_seconds: number;
+  cheat_count: number;
+}
+
 export interface QuestionStat {
   question_id: string;
   title: string;
@@ -153,6 +262,9 @@ export interface FormAnalytics {
   completion_rate: number;
   average_score_10?: number | null;
   highest_score_10?: number | null;
+  pass_rate?: number | null;
+  score_distribution?: DistributionBar[];
+  top_students?: TopStudentItem[];
   flagged_cheat_count?: number;
   roster_gradebook?: RosterGradebookEntry[];
   question_stats: QuestionStat[];

@@ -8,15 +8,19 @@ Write-Host "================================================================" -F
 Write-Host "  KROMAFORMS - DANG KHOI TAO PUBLIC HTTPS TUNNEL MIEN PHI..." -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
 
-ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:5173 nokey@localhost.run 2>&1 | ForEach-Object {
-    $line = $_.ToString()
-    if ($line -match "(https://[a-zA-Z0-9.-]+\.lhr\.life)") {
-        $pubUrl = $Matches[1]
-        Set-Content -Path $urlFile -Value $pubUrl -Encoding UTF8
-        Write-Host ""
-        Write-Host "  [PUBLIC ONLINE] Link Khao Sat Toàn Cầu của bạn:" -ForegroundColor Green
-        Write-Host "  👉 $pubUrl" -ForegroundColor Yellow
-        Write-Host ""
+while ($true) {
+    ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=25 -o ExitOnForwardFailure=yes -R 80:localhost:5173 nokey@localhost.run 2>&1 | ForEach-Object {
+        $line = $_.ToString()
+        if ($line -match "(https://[a-zA-Z0-9.-]+\.lhr\.life)") {
+            $pubUrl = $Matches[1]
+            Set-Content -Path $urlFile -Value $pubUrl -Encoding ascii
+            Write-Host ""
+            Write-Host "  [PUBLIC ONLINE] Link Khao Sat / Bai Tap Toan Cau cua ban:" -ForegroundColor Green
+            Write-Host "  -> $pubUrl" -ForegroundColor Yellow
+            Write-Host ""
+        }
     }
+    Write-Host "[Tunnel] Mat ket noi tam thoi, tu dong ket noi lai sau 3 giay..." -ForegroundColor DarkYellow
+    Start-Sleep -Seconds 3
 }
 

@@ -14,18 +14,20 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   agentGenerateForm,
   importFormFromCode,
   regenerateAgentKey,
 } from '../api';
-import type { AuthUser, ServerInfo, SurveyForm, ThemeColor } from '../types';
+import type { AuthUser, Classroom, ServerInfo, SurveyForm, ThemeColor } from '../types';
 
 interface AgentQuickFormModalProps {
   open: boolean;
   initialTab?: 'ai_prompt' | 'quick_code' | 'agent_api';
   defaultQuizMode?: boolean;
+  defaultClassroomId?: string | null;
+  classrooms?: Classroom[];
   user: AuthUser | null;
   serverInfo: ServerInfo | null;
   darkMode: boolean;
@@ -82,6 +84,8 @@ export function AgentQuickFormModal({
   open,
   initialTab = 'ai_prompt',
   defaultQuizMode = true,
+  defaultClassroomId = null,
+  classrooms = [],
   user,
   serverInfo,
   darkMode,
@@ -91,12 +95,24 @@ export function AgentQuickFormModal({
 }: AgentQuickFormModalProps) {
   const [tab, setTab] = useState<'ai_prompt' | 'quick_code' | 'agent_api'>(initialTab);
   const [isQuizMode, setIsQuizMode] = useState<boolean>(defaultQuizMode);
+  const [selectedClassroomId, setSelectedClassroomId] = useState<string>(
+    defaultClassroomId || ''
+  );
   const [prompt, setPrompt] = useState('');
   const [questionCount, setQuestionCount] = useState(5);
   const [themeColor, setThemeColor] = useState<ThemeColor>('indigo');
   const [codeInput, setCodeInput] = useState(
     defaultQuizMode ? SAMPLE_QUIZ_CODE : SAMPLE_DSL_CODE
   );
+
+  useEffect(() => {
+    if (open) {
+      setTab(initialTab);
+      setIsQuizMode(defaultQuizMode);
+      setSelectedClassroomId(defaultClassroomId || '');
+      setCodeInput(defaultQuizMode ? SAMPLE_QUIZ_CODE : SAMPLE_DSL_CODE);
+    }
+  }, [open, initialTab, defaultQuizMode, defaultClassroomId]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +139,7 @@ export function AgentQuickFormModal({
         theme_color: themeColor,
         is_quiz: isQuizMode,
         is_published: true,
+        classroom_id: selectedClassroomId || null,
       });
       onFormCreated(res.form);
       onClose();
@@ -143,6 +160,7 @@ export function AgentQuickFormModal({
         theme_color: themeColor,
         is_quiz: isQuizMode,
         is_published: true,
+        classroom_id: selectedClassroomId || null,
       });
       if (res.form) {
         onFormCreated(res.form);
@@ -324,6 +342,31 @@ print("Link giao cho Học sinh:", data["public_url"])`;
                   Thu thập ý kiến, đăng ký sự kiện, đánh giá sao
                 </div>
               </button>
+            </div>
+          )}
+
+          {/* CLASSROOM TARGET SELECTOR */}
+          {tab !== 'agent_api' && classrooms.length > 0 && (
+            <div>
+              <label className="block text-xs font-bold mb-1">
+                🏫 Giao trực tiếp cho Lớp Học (tự động gắn danh sách tên học sinh lớp đó):
+              </label>
+              <select
+                value={selectedClassroomId}
+                onChange={(e) => setSelectedClassroomId(e.target.value)}
+                className={`w-full px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm font-semibold border outline-none ${
+                  darkMode
+                    ? 'bg-zinc-900 border-zinc-800 text-zinc-100'
+                    : 'bg-zinc-50 border-zinc-200 text-zinc-900'
+                }`}
+              >
+                <option value="">-- Không gắn lớp cố định --</option>
+                {classrooms.map((cls) => (
+                  <option key={cls.id} value={cls.id}>
+                    {cls.name} — {cls.subject || 'Lớp học'} ({cls.student_count} HS)
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 

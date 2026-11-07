@@ -34,13 +34,21 @@ import {
 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { importFormFromCode, updateSurveyForm } from '../api';
-import type { Question, QuestionType, ServerInfo, SurveyForm, ThemeColor } from '../types';
+import type {
+  Classroom,
+  Question,
+  QuestionType,
+  ServerInfo,
+  SurveyForm,
+  ThemeColor,
+} from '../types';
 import { BrandLogo } from './BrandLogo';
 import { ResponsesAnalyticsView } from './ResponsesAnalyticsView';
 
 interface FormBuilderViewProps {
   initialForm: SurveyForm;
   initialTab?: 'questions' | 'responses' | 'settings';
+  classrooms: Classroom[];
   serverInfo: ServerInfo | null;
   darkMode: boolean;
   onToggleDarkMode: () => void;
@@ -116,6 +124,7 @@ function needsChoiceOptions(type: QuestionType): boolean {
 export function FormBuilderView({
   initialForm,
   initialTab = 'questions',
+  classrooms,
   serverInfo,
   darkMode,
   onToggleDarkMode,
@@ -198,6 +207,26 @@ export function FormBuilderView({
     patchLocalForm({ is_quiz: true, questions: nextQs });
   };
 
+  const handleSelectClassroom = (clsId: string) => {
+    if (!clsId) {
+      patchLocalForm({
+        classroom_id: null,
+        classroom_name: null,
+      });
+      return;
+    }
+    const found = classrooms.find((c) => c.id === clsId);
+    if (!found) return;
+    const names = found.student_names || [];
+    setRosterText(names.join('\n'));
+    patchLocalForm({
+      classroom_id: found.id,
+      classroom_name: found.name,
+      student_roster: names,
+      strict_roster: names.length > 0 ? true : form.strict_roster,
+    });
+  };
+
   const handleSave = async (overridePatch?: Partial<SurveyForm>) => {
     setSaving(true);
     try {
@@ -212,6 +241,7 @@ export function FormBuilderView({
         ...(overridePatch || {}),
       };
       const updated = await updateSurveyForm(form.id, {
+        classroom_id: payload.classroom_id ?? null,
         title: payload.title,
         description: payload.description,
         theme_color: payload.theme_color,
@@ -228,6 +258,9 @@ export function FormBuilderView({
         shuffle_questions: payload.shuffle_questions,
         strict_roster: payload.strict_roster,
         student_roster: payload.student_roster,
+        max_attempts: payload.max_attempts ?? 0,
+        due_at: payload.due_at ?? null,
+        pass_score: payload.pass_score ?? 5.0,
         questions: payload.questions,
       });
       setForm(updated);
@@ -629,6 +662,28 @@ export function FormBuilderView({
                   <ShieldAlert className="w-3.5 h-3.5" />
                   {form.anti_cheat_enabled ? 'Chống thoát App: BẬT' : 'Chống thoát App: TẮT'}
                 </button>
+
+                {/* Quick Assign Classroom Dropdown right in Builder */}
+                <div className="inline-flex items-center gap-1.5">
+                  <select
+                    value={form.classroom_id || ''}
+                    onChange={(e) => handleSelectClassroom(e.target.value)}
+                    className={`px-3 py-2 rounded-2xl text-xs font-bold border outline-none cursor-pointer ${
+                      form.classroom_id
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+                        : darkMode
+                          ? 'bg-zinc-950 border-zinc-800 text-zinc-300'
+                          : 'bg-white border-zinc-200 text-zinc-700'
+                    }`}
+                  >
+                    <option value="">🏫 Giao tự do (Chưa gắn Lớp)</option>
+                    {classrooms.map((cls) => (
+                      <option key={cls.id} value={cls.id}>
+                        🏫 Giao cho: {cls.name} ({cls.student_count} HS)
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {form.is_quiz && (
@@ -1214,7 +1269,7 @@ export function FormBuilderView({
               )}
             </div>
 
-            {/* STUDENT CLASS ROSTER CARD */}
+            {/* STUDENT CLASS ROSTER & CLASSROOM ASSIGNMENT CARD */}
             <div
               className={`p-5 sm:p-7 rounded-3xl border space-y-4 ${
                 darkMode ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-zinc-200 shadow-2xs'
@@ -1224,11 +1279,98 @@ export function FormBuilderView({
                 <Users className="w-5 h-5 text-indigo-500" />
                 <div>
                   <h2 className="font-display text-base sm:text-lg font-bold">
-                    Danh Sách Tên Học Sinh Giao Bài ({rosterText.split('\n').filter((x) => x.trim()).length} HS)
+                    Giao Cho Lớp Học &amp; Danh Sách Tên Học Sinh ({rosterText.split('\n').filter((x) => x.trim()).length} HS)
                   </h2>
                   <p className="text-xs text-zinc-500">
-                    Mỗi dòng 1 họ tên học sinh. Học sinh sẽ chọn đúng tên mình khi vào thi &amp; Giáo viên theo dõi được ai chưa nộp, cộng điểm riêng từng em.
+                    Chọn Lớp đã tạo sẵn để đồng bộ tự động cả danh sách lớp, hoặc tự nhập danh sách tên bên dưới.
                   </p>
+                </div>
+              </div>
+
+              {/* Select Classroom */}
+              <div>
+                <label className="block text-xs font-bold mb-1.5">
+                  Chọn Lớp Học nhận bài tập này:
+                </label>
+                <select
+                  value={form.classroom_id || ''}
+                  onChange={(e) => handleSelectClassroom(e.target.value)}
+                  className={`w-full px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold border outline-none ${
+                    darkMode
+                      ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
+                      : 'bg-zinc-50 border-zinc-200 text-zinc-900'
+                  }`}
+                >
+                  <option value="">-- Không gắn lớp cố định (Dùng danh sách riêng bên dưới) --</option>
+                  {classrooms.map((cls) => (
+                    <option key={cls.id} value={cls.id}>
+                      {cls.name} — {cls.subject || 'Chưa gắn môn'} ({cls.student_count} học sinh • Mã {cls.room_code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Attempts, Deadline & Pass Score */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-bold mb-1">
+                    Số lần nộp tối đa / HS
+                  </label>
+                  <select
+                    value={form.max_attempts ?? 0}
+                    onChange={(e) =>
+                      patchLocalForm({ max_attempts: Number(e.target.value) })
+                    }
+                    className={`w-full px-3 py-2.5 rounded-2xl text-xs font-semibold border outline-none ${
+                      darkMode
+                        ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
+                        : 'bg-zinc-50 border-zinc-200 text-zinc-900'
+                    }`}
+                  >
+                    <option value={0}>Không giới hạn</option>
+                    <option value={1}>Chỉ 1 lần duy nhất</option>
+                    <option value={2}>Tối đa 2 lần</option>
+                    <option value={3}>Tối đa 3 lần</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold mb-1">
+                    Điểm đạt yêu cầu (/10)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max="10"
+                    value={form.pass_score ?? 5.0}
+                    onChange={(e) =>
+                      patchLocalForm({ pass_score: Number(e.target.value) })
+                    }
+                    className={`w-full px-3 py-2.5 rounded-2xl text-xs font-mono font-bold border outline-none ${
+                      darkMode
+                        ? 'bg-zinc-950 border-zinc-800 text-emerald-400'
+                        : 'bg-zinc-50 border-zinc-200 text-emerald-700'
+                    }`}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold mb-1">
+                    Hạn chót nộp bài (tùy chọn)
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={form.due_at ? form.due_at.slice(0, 16) : ''}
+                    onChange={(e) =>
+                      patchLocalForm({ due_at: e.target.value || null })
+                    }
+                    className={`w-full px-3 py-2 rounded-2xl text-xs border outline-none ${
+                      darkMode
+                        ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
+                        : 'bg-zinc-50 border-zinc-200 text-zinc-900'
+                    }`}
+                  />
                 </div>
               </div>
 

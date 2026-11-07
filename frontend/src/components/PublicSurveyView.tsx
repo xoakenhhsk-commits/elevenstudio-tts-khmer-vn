@@ -12,6 +12,7 @@ import {
   Moon,
   Play,
   RotateCcw,
+  Search,
   Send,
   ShieldAlert,
   ShieldCheck,
@@ -24,6 +25,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchPublicSummary, fetchPublicSurvey, submitPublicSurvey } from '../api';
 import type { FormAnalytics, QuizSubmissionResult, SurveyForm } from '../types';
 import { BrandLogo } from './BrandLogo';
+import {
+  SAVED_STUDENT_CLASS_KEY,
+  SAVED_STUDENT_NAME_KEY,
+} from './PublicClassroomView';
 
 interface PublicSurveyViewProps {
   identifier: string;
@@ -102,6 +107,7 @@ export function PublicSurveyView({
   const [studentClass, setStudentClass] = useState('');
   const [respondentEmail, setRespondentEmail] = useState('');
   const [customNameMode, setCustomNameMode] = useState(false);
+  const [rosterSearch, setRosterSearch] = useState('');
 
   // Exam Lobby & Proctoring Anti-Cheat state
   const [examStarted, setExamStarted] = useState(false);
@@ -138,8 +144,23 @@ export function PublicSurveyView({
     fetchPublicSurvey(identifier)
       .then((f) => {
         setForm(f);
+        const savedName = localStorage.getItem(SAVED_STUDENT_NAME_KEY) || '';
+        const savedClass = localStorage.getItem(SAVED_STUDENT_CLASS_KEY) || '';
+        setStudentClass(f.classroom_name || savedClass);
+        if (savedName) {
+          if (
+            !f.student_roster ||
+            f.student_roster.length === 0 ||
+            f.student_roster.includes(savedName)
+          ) {
+            setRespondentName(savedName);
+          }
+        }
         const needsLobby = Boolean(
-          f.is_quiz || f.anti_cheat_enabled || f.time_limit_minutes > 0
+          f.is_quiz ||
+            f.anti_cheat_enabled ||
+            f.time_limit_minutes > 0 ||
+            (f.student_roster && f.student_roster.length > 0)
         );
         setExamStarted(!needsLobby);
         if (f.time_limit_minutes > 0) {
@@ -520,6 +541,16 @@ export function PublicSurveyView({
                   <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
                     {form.access_code}
                   </span>
+                  {form.classroom_name && (
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                      🏫 Giao cho: {form.classroom_name}
+                    </span>
+                  )}
+                  {(form.max_attempts ?? 0) > 0 && (
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                      Tối đa {form.max_attempts} lần nộp
+                    </span>
+                  )}
                 </div>
 
                 <h1 className="font-display text-2xl sm:text-3xl font-extrabold leading-tight">
@@ -600,34 +631,74 @@ export function PublicSurveyView({
                   </label>
 
                   {rosterList.length > 0 && !customNameMode ? (
-                    <div className="space-y-2">
-                      <select
-                        required
-                        value={respondentName}
-                        onChange={(e) => {
-                          if (e.target.value === '__CUSTOM__') {
+                    <div className="space-y-2.5">
+                      {/* Mobile-friendly Searchable Student Roster Picker */}
+                      {rosterList.length > 6 && (
+                        <div
+                          className={`flex items-center gap-2 px-3.5 py-2.5 rounded-2xl border ${
+                            darkMode
+                              ? 'bg-zinc-950 border-zinc-800'
+                              : 'bg-zinc-50 border-zinc-200'
+                          }`}
+                        >
+                          <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+                          <input
+                            type="text"
+                            value={rosterSearch}
+                            onChange={(e) => setRosterSearch(e.target.value)}
+                            placeholder="Gõ nhanh tên của em để lọc danh sách..."
+                            className="w-full bg-transparent outline-none text-xs sm:text-sm"
+                          />
+                        </div>
+                      )}
+
+                      <div className="max-h-52 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-2 pr-1">
+                        {rosterList
+                          .filter((n) =>
+                            n.toLowerCase().includes(rosterSearch.trim().toLowerCase())
+                          )
+                          .map((stName, idx) => {
+                            const selected = respondentName === stName;
+                            return (
+                              <button
+                                key={stName}
+                                type="button"
+                                onClick={() => {
+                                  setRespondentName(stName);
+                                  localStorage.setItem(SAVED_STUDENT_NAME_KEY, stName);
+                                }}
+                                className={`text-left px-3.5 py-3 rounded-2xl text-xs sm:text-sm font-semibold flex items-center justify-between border transition-all cursor-pointer active:scale-[0.99] ${
+                                  selected
+                                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
+                                    : darkMode
+                                      ? 'bg-zinc-950 border-zinc-800 text-zinc-200 hover:border-indigo-500'
+                                      : 'bg-zinc-50 border-zinc-200 text-zinc-800 hover:border-indigo-400'
+                                }`}
+                              >
+                                <span className="truncate">
+                                  <span className="opacity-60 font-mono mr-1.5">
+                                    {idx + 1}.
+                                  </span>
+                                  {stName}
+                                </span>
+                                {selected && <CheckCircle2 className="w-4 h-4 shrink-0" />}
+                              </button>
+                            );
+                          })}
+                      </div>
+
+                      {!form.strict_roster && (
+                        <button
+                          type="button"
+                          onClick={() => {
                             setCustomNameMode(true);
                             setRespondentName('');
-                          } else {
-                            setRespondentName(e.target.value);
-                          }
-                        }}
-                        className={`w-full px-4 py-3 rounded-2xl text-sm font-semibold border outline-none cursor-pointer ${
-                          darkMode
-                            ? 'bg-zinc-950 border-zinc-800 text-zinc-100'
-                            : 'bg-zinc-50 border-zinc-200 text-zinc-900'
-                        }`}
-                      >
-                        <option value="">— Chọn tên của em trong Danh sách lớp ({rosterList.length} HS) —</option>
-                        {rosterList.map((stName) => (
-                          <option key={stName} value={stName}>
-                            {stName}
-                          </option>
-                        ))}
-                        {!form.strict_roster && (
-                          <option value="__CUSTOM__">+ Tên em chưa có trong danh sách (Tự nhập tên)...</option>
-                        )}
-                      </select>
+                          }}
+                          className="text-xs font-semibold text-indigo-500 hover:underline cursor-pointer"
+                        >
+                          + Tên em chưa có trong danh sách lớp? Bấm để tự nhập tên
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-1.5">
@@ -1315,7 +1386,7 @@ export function PublicSurveyView({
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="hidden sm:flex items-center justify-between gap-3 pt-2">
               <button
                 type="button"
                 onClick={() => {
@@ -1342,6 +1413,42 @@ export function PublicSurveyView({
                   <>
                     <Send className="w-4 h-4" />
                     {form.is_quiz ? 'Nộp Bài & Chấm Điểm' : 'Gửi Khảo Sát'}
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* MOBILE STICKY BOTTOM EXAM SUBMIT BAR */}
+            <div
+              className={`sm:hidden fixed bottom-0 inset-x-0 z-30 p-3 border-t backdrop-blur-xl flex items-center justify-between gap-3 ${
+                darkMode
+                  ? 'bg-zinc-950/95 border-zinc-800'
+                  : 'bg-white/95 border-zinc-200 shadow-lg'
+              }`}
+            >
+              <div className="text-xs">
+                <div className="font-bold">
+                  Đã làm {answeredCount}/{form.questions.length} câu
+                </div>
+                <div className="text-[11px] text-zinc-500 truncate max-w-[140px]">
+                  {respondentName || 'Chưa ghi tên'}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className={`flex-1 py-3 px-4 rounded-2xl text-xs font-extrabold inline-flex items-center justify-center gap-2 shadow-md active:scale-[0.99] disabled:opacity-50 ${theme.btn}`}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Đang nộp...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    {form.is_quiz ? 'Nộp Bài Ngay' : 'Gửi Khảo Sát'}
                   </>
                 )}
               </button>
